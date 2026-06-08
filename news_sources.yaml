@@ -1,0 +1,39 @@
+# Earshot — AI news scout sources.
+# Populated for module 5. Module 1 ships this as a placeholder so config loading
+# is exercised end-to-end.
+#
+# Supported types (parser registered in news_scout.py):
+#   - rss : standard RSS/Atom feed URL
+#   - hn  : Hacker News (Algolia API), filtered by keywords
+#
+# All sources are deduped on URL before LLM scoring.
+
+sources:
+  - name: Anthropic
+    type: rss
+    url: https://www.anthropic.com/news/rss.xml
+
+  - name: OpenAI
+    type: rss
+    url: https://openai.com/news/rss.xml
+
+  - name: Google DeepMind
+    type: rss
+    url: https://deepmind.google/blog/rss.xml
+
+  - name: Hugging Face
+    type: rss
+    url: https://huggingface.co/blog/feed.xml
+
+  - name: Simon Willison
+    type: rss
+    url: https://simonwillison.net/atom/everything/
+
+  - name: The Batch (DeepLearning.AI)
+    type: rss
+    url: https://www.deeplearning.ai/the-batch/feed/
+
+  - name: Hacker News (AI filter)
+    type: hn
+    keywords: ["AI", "LLM", "GPT", "Claude", "Anthropic", "OpenAI", "Gemini", "DeepMind"]
+    min_points: 100

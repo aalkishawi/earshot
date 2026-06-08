@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "earshot"
+version = "0.1.0"
+description = "Podcast and AI-news intelligence agent — monitors YouTube podcasts, summarizes episodes, extracts new concepts, scouts AI news, delivers via email."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "a_alkishawi", email = "a_alkishawi@yahoo.com" }]
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+]
+
+[project.scripts]
+earshot = "earshot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["earshot*"]

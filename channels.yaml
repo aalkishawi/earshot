@@ -1,0 +1,42 @@
+# Earshot — YouTube channels to monitor.
+#
+# priority:
+#   1 = normal — episodes only appear in the daily digest
+#   2 = high   — every new episode also fires an instant alert
+#
+# keywords (optional): per-channel watch list. If a new video's title matches
+# any keyword (case-insensitive substring), it is flagged high-priority for
+# that detection — even if the channel's own priority is 1.
+#
+# To add a channel later: run `earshot resolve-channel @somehandle` to get the
+# channel_id, then add a block here.
+
+channels:
+  - handle: "@peterdiamandis"
+    channel_id: UCvxm0qTrGN_1LMYgUaftWyQ
+    name: "Peter H. Diamandis"
+    priority: 1
+    keywords:
+      - AI
+      - AGI
+      - superintelligence
+      - longevity
+
+  - handle: "@AIDailyBrief"
+    channel_id: UCKelCK4ZaO6HeEI1KQjqzWA
+    name: "The AI Daily Brief: Artificial Intelligence News"
+    priority: 2  # AI-focused — treat every episode as potentially high-signal
+    keywords: []
+
+  - handle: "@TheDiaryOfACEO"
+    channel_id: UCGq-a57w-aPwyi3pW7XLiHw
+    name: "The Diary Of A CEO"
+    priority: 1
+    keywords:
+      - AI
+      - artificial intelligence
+      - LLM
+      - OpenAI
+      - Anthropic
+      - DeepMind
+      - AGI
