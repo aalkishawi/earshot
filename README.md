@@ -9,7 +9,10 @@ pipeline itself (`earshot run`) is wired up over modules 2–7.
 
 ## Setup
 
-Requires Python 3.11+.
+Requires Python 3.11+. For the audio-ASR fallback path (module 3), also install
+ffmpeg — on Windows the easiest path is `winget install Gyan.FFmpeg`. yt-dlp
+uses ffmpeg to extract audio from the downloaded stream. If captions are
+available for a video, ffmpeg is not invoked.
 
 ```powershell
 # from the repo root
@@ -61,8 +64,8 @@ Use `earshot resolve-channel @handle` to get the `channel_id` for a new entry.
 ## Roadmap
 
 1. ✅ **Module 1** — package skeleton, SQLite schema, config, CLI
-2. **Module 2** — RSS detector (idempotent new-video detection)
-3. **Module 3** — transcriber (yt-dlp captions → Groq Whisper ASR fallback)
+2. ✅ **Module 2** — RSS detector (idempotent new-video detection)
+3. ✅ **Module 3** — transcriber (yt-dlp captions → Groq Whisper ASR fallback)
 4. **Module 4** — analyzer (Claude: summary + concept extraction; glossary dedup)
 5. **Module 5** — AI news scout
 6. **Module 6** — digest builder + `study_queue.md`

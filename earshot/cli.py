@@ -18,6 +18,7 @@ import click
 from earshot import __version__, config as config_mod, db as db_mod
 from earshot.channel_resolver import ChannelResolutionError, resolve_handle
 from earshot.detector import detect_all
+from earshot.transcriber import select_pending, transcribe_video
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -243,19 +244,68 @@ def videos_cmd(ctx: click.Context, state_filter: str | None, limit: int, priorit
     conn.close()
 
 
+@main.command("transcribe")
+@click.option("-n", "limit", default=None, type=int, help="Max videos to process this run.")
+@click.option("--video-id", default=None, help="Force-transcribe a specific video (any state).")
+@click.pass_context
+def transcribe_cmd(ctx: click.Context, limit: int | None, video_id: str | None) -> None:
+    """Transcribe videos in 'detected' state. Captions first, ASR as fallback.
+
+    With --video-id, processes the named video regardless of current state
+    (useful to manually pull a baselined episode through the pipeline).
+    """
+    cfg: config_mod.Config = ctx.obj["config"]
+    dry_run: bool = ctx.obj["dry_run"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}. Run `earshot init-db` first.", err=True)
+        sys.exit(1)
+
+    conn = db_mod.connect(cfg.db_path)
+    pending = select_pending(conn, limit=limit, video_id=video_id)
+    if not pending:
+        click.echo("No videos to transcribe. (Run `earshot detect` first, or pass --video-id.)")
+        return
+
+    click.echo(
+        f"Transcribing {len(pending)} video(s){' (dry-run)' if dry_run else ''}..."
+    )
+    n_ok = n_fail = 0
+    total_chars = 0
+    for row in pending:
+        result = transcribe_video(conn, row, cfg, dry_run=dry_run)
+        if result.status == "transcribed":
+            n_ok += 1
+            total_chars += result.chars
+            click.echo(
+                f"  OK   {result.video_id}  source={result.source:14s}  "
+                f"chars={result.chars:>7,}  -> {result.transcript_path}"
+            )
+        else:
+            n_fail += 1
+            click.echo(f"  FAIL {result.video_id}  {result.error}")
+
+    click.echo("")
+    click.echo(
+        f"Summary: transcribed={n_ok} failed={n_fail} total_chars={total_chars:,}"
+        + ("  (dry-run: no files or DB writes)" if dry_run else "")
+    )
+    conn.close()
+
+
 @main.command("run")
 @click.pass_context
 def run(ctx: click.Context) -> None:
-    """Run the full pipeline. (Not yet implemented — module 3+.)"""
+    """Run the full pipeline. (Not yet implemented — module 4+.)"""
     dry_run: bool = ctx.obj["dry_run"]
     click.echo(f"`earshot run` is not implemented yet (dry_run={dry_run}).")
-    click.echo("Modules 3+ will add transcribe → summarize → notify. Available now:")
+    click.echo("Modules 4+ will add summarize → notify. Available now:")
     click.echo("  earshot init-db")
     click.echo("  earshot status")
     click.echo("  earshot channels")
     click.echo("  earshot resolve-channel @somehandle")
     click.echo("  earshot detect [--dry-run] [--channel @handle]")
     click.echo("  earshot videos [--state X] [-n N] [--priority-only]")
+    click.echo("  earshot transcribe [-n N] [--video-id ID]")
 
 
 if __name__ == "__main__":
