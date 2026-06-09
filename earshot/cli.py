@@ -15,10 +15,55 @@ import sys
 
 import click
 
+import json
+import re
+
 from earshot import __version__, config as config_mod, db as db_mod
 from earshot.channel_resolver import ChannelResolutionError, resolve_handle
 from earshot.detector import detect_all
-from earshot.transcriber import select_pending, transcribe_video
+from earshot.transcriber import select_pending as select_pending_transcribe, transcribe_video
+from earshot.analyzer import (
+    CostCapReached, analyze_video, finish_run, make_client,
+    select_pending as select_pending_analyze, start_run,
+)
+
+
+_XML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _normalize_string_list(items: list) -> list[str]:
+    """Make `show` defensive against shape variations in Claude's output.
+
+    Three pathologies handled:
+      - List of dicts (legacy schema) → pull the first non-empty string value.
+      - List of single characters (the model leaked tool-call XML and JSON
+        emitted it char-by-char) → join, strip XML tags, return as one item.
+      - List of strings → pass through, dropping empties.
+    """
+    if not items:
+        return []
+    # Pathology: char-level fragmentation. Heuristic: most elements are <=2
+    # chars AND the total list is long.
+    str_items = [x for x in items if isinstance(x, str)]
+    if len(str_items) == len(items) and len(items) > 20:
+        tiny = sum(1 for s in str_items if len(s) <= 2)
+        if tiny / len(items) > 0.5:
+            joined = "".join(str_items)
+            cleaned = _XML_TAG_RE.sub("", joined).strip()
+            return [cleaned] if cleaned else []
+    out: list[str] = []
+    for it in items:
+        if isinstance(it, str):
+            s = it.strip()
+            if s:
+                out.append(s)
+        elif isinstance(it, dict):
+            for key in ("quote", "text", "takeaway", "content"):
+                v = it.get(key)
+                if isinstance(v, str) and v.strip():
+                    out.append(v.strip())
+                    break
+    return out
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -261,7 +306,7 @@ def transcribe_cmd(ctx: click.Context, limit: int | None, video_id: str | None) 
         sys.exit(1)
 
     conn = db_mod.connect(cfg.db_path)
-    pending = select_pending(conn, limit=limit, video_id=video_id)
+    pending = select_pending_transcribe(conn, limit=limit, video_id=video_id)
     if not pending:
         click.echo("No videos to transcribe. (Run `earshot detect` first, or pass --video-id.)")
         return
@@ -292,13 +337,168 @@ def transcribe_cmd(ctx: click.Context, limit: int | None, video_id: str | None) 
     conn.close()
 
 
+@main.command("analyze")
+@click.option("-n", "limit", default=None, type=int, help="Max videos to process this run.")
+@click.option("--video-id", default=None, help="Analyze a specific video regardless of state.")
+@click.pass_context
+def analyze_cmd(ctx: click.Context, limit: int | None, video_id: str | None) -> None:
+    """Summarize transcribed videos and extract concepts via Claude.
+
+    Cost-capped via MAX_LLM_COST_PER_RUN_USD (default $2). Token usage and
+    cost are persisted in the `runs` table.
+    """
+    cfg: config_mod.Config = ctx.obj["config"]
+    dry_run: bool = ctx.obj["dry_run"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}. Run `earshot init-db` first.", err=True)
+        sys.exit(1)
+
+    conn = db_mod.connect(cfg.db_path)
+    pending = select_pending_analyze(conn, limit=limit, video_id=video_id)
+    if not pending:
+        click.echo("No videos to analyze. (Run `earshot transcribe` first, or pass --video-id.)")
+        return
+
+    client = make_client(cfg)
+    if client is None and not dry_run:
+        click.echo("ANTHROPIC_API_KEY not set. Set it in .env or use --dry-run.", err=True)
+        sys.exit(1)
+
+    run_id = None if dry_run else start_run(conn)
+    click.echo(
+        f"Analyzing {len(pending)} video(s){' (dry-run)' if dry_run else ''}  "
+        f"(model={'(dry-run)' if dry_run else 'haiku-4.5'}, run_id={run_id})"
+    )
+
+    n_ok = n_fail = 0
+    total_new = total_dup = 0
+    total_in = total_out = 0
+    total_cost = 0.0
+    capped = False
+
+    for row in pending:
+        try:
+            result = analyze_video(conn, row, cfg, client, run_id=run_id, dry_run=dry_run)
+        except CostCapReached as e:
+            click.echo(f"  STOP: {e}")
+            capped = True
+            break
+        if result.status == "summarized":
+            n_ok += 1
+            total_new += result.new_concepts
+            total_dup += result.dup_concepts
+            total_in += result.input_tokens
+            total_out += result.output_tokens
+            total_cost += result.cost_usd
+            click.echo(
+                f"  OK   {result.video_id}  "
+                f"concepts: +{result.new_concepts} new / {result.dup_concepts} known  "
+                f"tokens: {result.input_tokens:>6,} in / {result.output_tokens:>5,} out  "
+                f"cost: ${result.cost_usd:.4f}"
+            )
+        elif result.status == "skipped":
+            click.echo(f"  SKIP {result.video_id}  {result.error}")
+        else:
+            n_fail += 1
+            click.echo(f"  FAIL {result.video_id}  {result.error}")
+
+    if run_id is not None:
+        finish_run(conn, run_id, status="ok" if not capped else "capped")
+
+    click.echo("")
+    click.echo(
+        f"Summary: ok={n_ok} failed={n_fail}  "
+        f"concepts: +{total_new} new / {total_dup} known  "
+        f"tokens: {total_in:,} in / {total_out:,} out  "
+        f"cost: ${total_cost:.4f}"
+        + ("  (dry-run)" if dry_run else "")
+    )
+    conn.close()
+
+
+@main.command("show")
+@click.argument("video_id")
+@click.pass_context
+def show_cmd(ctx: click.Context, video_id: str) -> None:
+    """Pretty-print the stored analysis for a video."""
+    cfg: config_mod.Config = ctx.obj["config"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}.", err=True)
+        sys.exit(1)
+    conn = db_mod.connect(cfg.db_path)
+    row = conn.execute(
+        """
+        SELECT v.video_id, v.title, v.url, v.state, v.is_priority, v.summary_json,
+               v.transcript_source, c.handle, c.name AS channel_name
+          FROM videos v
+          JOIN channels c ON c.channel_id = v.channel_id
+         WHERE v.video_id = ?
+        """,
+        (video_id,),
+    ).fetchone()
+    if not row:
+        click.echo(f"No video with id {video_id}", err=True)
+        sys.exit(1)
+
+    prio = " [PRIORITY]" if row["is_priority"] else ""
+    click.echo(f"{row['handle']} / {row['video_id']}{prio}")
+    click.echo(f"{row['title']}")
+    click.echo(f"{row['url']}")
+    click.echo(f"state={row['state']}  transcript_source={row['transcript_source']}")
+    click.echo("")
+
+    if not row["summary_json"]:
+        click.echo("No analysis on file. Run `earshot analyze --video-id "
+                   f"{video_id}` to generate one.")
+        return
+
+    a = json.loads(row["summary_json"])
+    click.echo("Summary:")
+    click.echo(f"  {a.get('summary','(none)')}")
+    click.echo("")
+
+    # Defensive rendering: Claude sometimes returns string arrays as a list of
+    # single characters or wraps content in legacy XML tool-call syntax. Normalize.
+    takeaways = _normalize_string_list(a.get("key_takeaways") or [])
+    if takeaways:
+        click.echo("Key takeaways:")
+        for t in takeaways:
+            click.echo(f"  - {t}")
+        click.echo("")
+    quotes = _normalize_string_list(a.get("notable_quotes") or [])
+    if quotes:
+        click.echo("Notable quotes:")
+        for q in quotes:
+            click.echo(f'  "{q}"')
+        click.echo("")
+
+    concepts = a.get("concepts") or []
+    # Mark which were new (first_seen_video_id = this video) vs already-known.
+    if concepts:
+        click.echo(f"Concepts ({len(concepts)}):")
+        for c in concepts:
+            term = c.get("term", "")
+            cat = c.get("category", "concept")
+            gloss = conn.execute(
+                "SELECT first_seen_video_id FROM glossary WHERE normalized_term = ?",
+                (term.strip().lower(),),
+            ).fetchone()
+            tag = "[NEW]  " if (gloss and gloss["first_seen_video_id"] == video_id) else "[known]"
+            click.echo(f"  {tag} {term} ({cat})")
+            if c.get("definition"):
+                click.echo(f"          {c['definition']}")
+            if c.get("why_it_matters"):
+                click.echo(f"          why: {c['why_it_matters']}")
+    conn.close()
+
+
 @main.command("run")
 @click.pass_context
 def run(ctx: click.Context) -> None:
-    """Run the full pipeline. (Not yet implemented — module 4+.)"""
+    """Run the full pipeline. (Not yet implemented — module 5+.)"""
     dry_run: bool = ctx.obj["dry_run"]
     click.echo(f"`earshot run` is not implemented yet (dry_run={dry_run}).")
-    click.echo("Modules 4+ will add summarize → notify. Available now:")
+    click.echo("Modules 5+ will add news scout + digest + email. Available now:")
     click.echo("  earshot init-db")
     click.echo("  earshot status")
     click.echo("  earshot channels")
@@ -306,6 +506,8 @@ def run(ctx: click.Context) -> None:
     click.echo("  earshot detect [--dry-run] [--channel @handle]")
     click.echo("  earshot videos [--state X] [-n N] [--priority-only]")
     click.echo("  earshot transcribe [-n N] [--video-id ID]")
+    click.echo("  earshot analyze [-n N] [--video-id ID] [--dry-run]")
+    click.echo("  earshot show VIDEO_ID")
 
 
 if __name__ == "__main__":
