@@ -12,6 +12,7 @@ authors = [{ name = "a_alkishawi", email = "a_alkishawi@yahoo.com" }]
 dependencies = [
     "anthropic>=0.40",
     "click>=8.1",
+    "feedparser>=6.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "requests>=2.31",

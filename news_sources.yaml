@@ -1,17 +1,22 @@
 # Earshot — AI news scout sources.
-# Populated for module 5. Module 1 ships this as a placeholder so config loading
-# is exercised end-to-end.
 #
-# Supported types (parser registered in news_scout.py):
-#   - rss : standard RSS/Atom feed URL
-#   - hn  : Hacker News (Algolia API), filtered by keywords
+# Supported types (handled in news_scout.py):
+#   - rss : standard RSS/Atom/RDF feed URL (parsed via feedparser)
+#   - hn  : Hacker News Algolia search filtered by keywords + min_points
 #
-# All sources are deduped on URL before LLM scoring.
+# First-sync policy: on a source's first appearance in the database, all
+# currently-visible items are marked state='skipped' (baseline) so we don't
+# LLM-score the backlog. From the second run onward, genuinely new items
+# get state='seen' and feed into the relevance scorer.
+#
+# All sources are deduped on URL.
 
 sources:
+  # Community-maintained Anthropic news mirror (Anthropic does not publish
+  # an official RSS feed as of 2026-06).
   - name: Anthropic
     type: rss
-    url: https://www.anthropic.com/news/rss.xml
+    url: https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml
 
   - name: OpenAI
     type: rss
@@ -29,9 +34,15 @@ sources:
     type: rss
     url: https://simonwillison.net/atom/everything/
 
-  - name: The Batch (DeepLearning.AI)
+  # Swyx + Alessio — long-form podcast-driven AI commentary.
+  - name: Latent Space
     type: rss
-    url: https://www.deeplearning.ai/the-batch/feed/
+    url: https://www.latent.space/feed
+
+  # Jack Clark (Anthropic co-founder) — weekly AI policy + capabilities digest.
+  - name: Import AI
+    type: rss
+    url: https://importai.substack.com/feed
 
   - name: Hacker News (AI filter)
     type: hn

@@ -26,6 +26,7 @@ from earshot.analyzer import (
     CostCapReached, analyze_video, finish_run, make_client,
     select_pending as select_pending_analyze, start_run,
 )
+from earshot.news_scout import scout as run_scout
 
 
 _XML_TAG_RE = re.compile(r"<[^>]+>")
@@ -492,13 +493,112 @@ def show_cmd(ctx: click.Context, video_id: str) -> None:
     conn.close()
 
 
+@main.command("scout")
+@click.option("--skip-scoring", is_flag=True, help="Fetch only — do not call Claude.")
+@click.pass_context
+def scout_cmd(ctx: click.Context, skip_scoring: bool) -> None:
+    """Fetch AI news from configured sources, dedupe, score via Claude.
+
+    With --dry-run: fetches but does not write to DB or call Claude.
+    With --skip-scoring: writes to DB but does not call Claude (lets you
+    inspect the raw items before paying for scoring).
+    """
+    cfg: config_mod.Config = ctx.obj["config"]
+    dry_run: bool = ctx.obj["dry_run"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}. Run `earshot init-db` first.", err=True)
+        sys.exit(1)
+    if not cfg.news_sources:
+        click.echo("No news sources configured. Edit news_sources.yaml.", err=True)
+        sys.exit(1)
+
+    conn = db_mod.connect(cfg.db_path)
+    client = make_client(cfg)
+    if client is None and not dry_run and not skip_scoring:
+        click.echo("ANTHROPIC_API_KEY not set. Use --skip-scoring or --dry-run, or set the key.", err=True)
+        sys.exit(1)
+
+    run_id = None if dry_run else start_run(conn)
+    click.echo(
+        f"Scouting {len(cfg.news_sources)} source(s)"
+        f"{' (dry-run)' if dry_run else ''}"
+        f"{' (skip-scoring)' if skip_scoring else ''}"
+        f"  run_id={run_id}"
+    )
+
+    fetch_results, summary = run_scout(
+        conn, cfg, client, dry_run=dry_run,
+        skip_scoring=skip_scoring, run_id=run_id,
+    )
+
+    for r in fetch_results:
+        if r.error:
+            click.echo(f"  {r.source_name:25s} ERROR: {r.error}")
+        else:
+            click.echo(
+                f"  {r.source_name:25s} fetched={r.fetched:3d}  "
+                f"new={r.inserted:3d}  baselined={r.baselined:4d}  seen={r.already_seen:3d}"
+            )
+
+    if run_id is not None:
+        finish_run(conn, run_id, status="ok")
+
+    click.echo("")
+    click.echo(
+        f"Summary: inserted={summary.total_inserted}  "
+        f"baselined={summary.total_baselined}  "
+        f"already_seen={summary.total_already_seen}  "
+        f"scored={summary.total_scored}  "
+        f"scoring_cost=${summary.scoring_cost_usd:.4f}"
+        + ("  (dry-run)" if dry_run else "")
+    )
+    conn.close()
+
+
+@main.command("news")
+@click.option("--min-score", default=None, type=int, help="Filter to items with importance_score >= N.")
+@click.option("--state", "state_filter", default=None, help="seen | scored | notified | skipped")
+@click.option("-n", "limit", default=20, type=int)
+@click.pass_context
+def news_cmd(ctx: click.Context, min_score: int | None, state_filter: str | None, limit: int) -> None:
+    """List news items, most-recently-seen first."""
+    cfg: config_mod.Config = ctx.obj["config"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}.", err=True)
+        sys.exit(1)
+    conn = db_mod.connect(cfg.db_path)
+    sql = "SELECT id, source, title, url, state, importance_score, published_at FROM news_items WHERE 1=1"
+    params: list = []
+    if min_score is not None:
+        sql += " AND importance_score >= ?"
+        params.append(min_score)
+    if state_filter:
+        sql += " AND state = ?"
+        params.append(state_filter)
+    sql += " ORDER BY seen_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        click.echo("No matching news items.")
+        return
+    for r in rows:
+        score = r["importance_score"]
+        score_str = f"[{score}]" if score is not None else "[-]"
+        title = (r["title"] or "")[:80]
+        click.echo(
+            f"  {score_str} {r['state']:8s} {r['source']:25s} {title}"
+        )
+        click.echo(f"           {r['url']}")
+    conn.close()
+
+
 @main.command("run")
 @click.pass_context
 def run(ctx: click.Context) -> None:
-    """Run the full pipeline. (Not yet implemented — module 5+.)"""
+    """Run the full pipeline. (Not yet implemented — module 6+.)"""
     dry_run: bool = ctx.obj["dry_run"]
     click.echo(f"`earshot run` is not implemented yet (dry_run={dry_run}).")
-    click.echo("Modules 5+ will add news scout + digest + email. Available now:")
+    click.echo("Modules 6+ will add digest + email delivery. Available now:")
     click.echo("  earshot init-db")
     click.echo("  earshot status")
     click.echo("  earshot channels")
@@ -508,6 +608,8 @@ def run(ctx: click.Context) -> None:
     click.echo("  earshot transcribe [-n N] [--video-id ID]")
     click.echo("  earshot analyze [-n N] [--video-id ID] [--dry-run]")
     click.echo("  earshot show VIDEO_ID")
+    click.echo("  earshot scout [--skip-scoring]")
+    click.echo("  earshot news [--min-score N] [--state X] [-n N]")
 
 
 if __name__ == "__main__":
