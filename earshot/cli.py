@@ -29,8 +29,9 @@ from earshot.analyzer import (
 from earshot.news_scout import scout as run_scout
 from earshot import digest as digest_mod
 from earshot import study_queue as study_queue_mod
-from earshot.notifier import make_notifier
+from earshot.notifier import make_notifiers
 from earshot.notifier.email_yahoo import EmailYahooNotifier
+from earshot.notifier.twilio_voice import TwilioTtsNotifier
 
 
 _XML_TAG_RE = re.compile(r"<[^>]+>")
@@ -615,8 +616,28 @@ def digest_cmd(ctx: click.Context, instant: bool) -> None:
         sys.exit(1)
     conn = db_mod.connect(cfg.db_path)
 
-    notifier = make_notifier(cfg, dry_run=dry_run)
-    click.echo(f"Notifier: {notifier.channel}")
+    anthropic_client = make_client(cfg)
+    notifiers = make_notifiers(cfg, anthropic_client=anthropic_client, dry_run=dry_run)
+    click.echo(f"Notifiers: {', '.join(n.channel for n in notifiers)}")
+
+    def _fanout(p: digest_mod.DigestPayload, md_path) -> bool:
+        """Send to every notifier, log alerts, return True if any succeeded."""
+        any_sent = False
+        for n in notifiers:
+            result = n.send(p)
+            click.echo(
+                f"               send:    {result.status} via {result.channel}"
+                + (f" -> {result.recipient}" if result.recipient and result.recipient != 'stdout' else "")
+                + (f"  ERROR: {result.error}" if result.error else "")
+            )
+            if not dry_run:
+                digest_mod.record_alert(
+                    conn, p, channel=result.channel, recipient=result.recipient,
+                    status=result.status, payload_path=md_path, error=result.error,
+                )
+            if result.status == "sent":
+                any_sent = True
+        return any_sent
 
     if instant:
         payloads = digest_mod.build_instant_alerts(conn, cfg)
@@ -627,19 +648,11 @@ def digest_cmd(ctx: click.Context, instant: bool) -> None:
         click.echo(f"Built {len(payloads)} instant alert(s){' (dry-run)' if dry_run else ''}:")
         for p in payloads:
             md_path = digest_mod.archive_payload(p, cfg.data_dir)
-            result = notifier.send(p)
             click.echo(f"  {p.digest_type:14s} {p.subject}")
             click.echo(f"               archive: {md_path}")
-            click.echo(f"               send:    {result.status} via {result.channel}"
-                       + (f" -> {result.recipient}" if result.recipient and result.recipient != 'stdout' else "")
-                       + (f"  ERROR: {result.error}" if result.error else ""))
-            if not dry_run:
-                digest_mod.record_alert(
-                    conn, p, channel=result.channel, recipient=result.recipient,
-                    status=result.status, payload_path=md_path, error=result.error,
-                )
-                if result.status == "sent":
-                    digest_mod.mark_notified(conn, p)
+            any_sent = _fanout(p, md_path)
+            if not dry_run and any_sent:
+                digest_mod.mark_notified(conn, p)
     else:
         payload = digest_mod.build_daily(conn, cfg)
         if payload is None:
@@ -647,22 +660,14 @@ def digest_cmd(ctx: click.Context, instant: bool) -> None:
             conn.close()
             return
         md_path = digest_mod.archive_payload(payload, cfg.data_dir)
-        result = notifier.send(payload)
         click.echo(f"Built daily digest{' (dry-run)' if dry_run else ''}:")
         click.echo(f"  subject: {payload.subject}")
         click.echo(f"  videos:  {len(payload.videos)}")
         click.echo(f"  news:    {len(payload.news_items)}")
         click.echo(f"  archive: {md_path}")
-        click.echo(f"  send:    {result.status} via {result.channel}"
-                   + (f" -> {result.recipient}" if result.recipient and result.recipient != 'stdout' else "")
-                   + (f"  ERROR: {result.error}" if result.error else ""))
-        if not dry_run:
-            digest_mod.record_alert(
-                conn, payload, channel=result.channel, recipient=result.recipient,
-                status=result.status, payload_path=md_path, error=result.error,
-            )
-            if result.status == "sent":
-                digest_mod.mark_notified(conn, payload)
+        any_sent = _fanout(payload, md_path)
+        if not dry_run and any_sent:
+            digest_mod.mark_notified(conn, payload)
 
     # Always regenerate the study queue after a digest run.
     sq_path = config_mod.REPO_ROOT / "study_queue.md"
@@ -694,6 +699,132 @@ def test_email_cmd(ctx: click.Context) -> None:
         sys.exit(2)
 
 
+@main.command("call")
+@click.option("--video-id", default=None, help="Voice-call about a specific video (any state).")
+@click.option("--news-id", default=None, type=int, help="Voice-call about a specific news item.")
+@click.option("--daily", is_flag=True, help="Voice-call the daily digest content (regenerated, not marked notified).")
+@click.pass_context
+def call_cmd(ctx: click.Context, video_id: str | None, news_id: int | None, daily: bool) -> None:
+    """Voice-only call for a specific item or the daily digest.
+
+    Does NOT mark items notified and does NOT send email — it just dials the
+    phone. Useful for replaying a missed call without disturbing the
+    notification state machine.
+    """
+    cfg: config_mod.Config = ctx.obj["config"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}.", err=True)
+        sys.exit(1)
+    if cfg.missing_keys_for_voice():
+        click.echo(f"Voice not configured. Missing: {', '.join(cfg.missing_keys_for_voice())}", err=True)
+        sys.exit(1)
+
+    n_flags = sum([bool(video_id), bool(news_id), daily])
+    if n_flags != 1:
+        click.echo("Specify exactly one of --video-id, --news-id, or --daily.", err=True)
+        sys.exit(2)
+
+    conn = db_mod.connect(cfg.db_path)
+    payload: digest_mod.DigestPayload | None = None
+
+    if video_id:
+        row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,)).fetchone()
+        if not row:
+            click.echo(f"No video with id {video_id}", err=True)
+            sys.exit(1)
+        if not row["summary_json"]:
+            click.echo(f"Video {video_id} has no summary yet. Run `earshot analyze --video-id {video_id}` first.", err=True)
+            sys.exit(1)
+        v = digest_mod._video_to_digest(conn, row)
+        payload = digest_mod.DigestPayload(
+            digest_type="instant_video",
+            date_local=digest_mod.today_in_tz(cfg.digest_timezone),
+            subject=f"Earshot replay — {v.channel_handle}: {v.title}",
+            videos=[v],
+        )
+    elif news_id:
+        row = conn.execute("SELECT * FROM news_items WHERE id = ?", (news_id,)).fetchone()
+        if not row:
+            click.echo(f"No news item with id {news_id}", err=True)
+            sys.exit(1)
+        n = digest_mod._news_to_digest(row)
+        payload = digest_mod.DigestPayload(
+            digest_type="instant_news",
+            date_local=digest_mod.today_in_tz(cfg.digest_timezone),
+            subject=f"Earshot replay — {n.source}: {n.title[:80]}",
+            news_items=[n],
+        )
+    elif daily:
+        # Rebuild the daily payload from anything currently scored, ignoring
+        # notified_at filter so we always get something. (Replays from
+        # archived runs aren't supported yet — this regenerates the script.)
+        rows = list(conn.execute(
+            """SELECT * FROM news_items
+                WHERE state IN ('scored','notified')
+                  AND importance_score >= ?
+                ORDER BY importance_score DESC, seen_at DESC LIMIT 15""",
+            (cfg.digest_min_news_score,),
+        ).fetchall())
+        if not rows:
+            click.echo("No scored news above threshold to call about.", err=True)
+            sys.exit(1)
+        news_items = [digest_mod._news_to_digest(r) for r in rows]
+        payload = digest_mod.DigestPayload(
+            digest_type="daily",
+            date_local=digest_mod.today_in_tz(cfg.digest_timezone),
+            subject=f"Earshot replay — daily digest ({len(news_items)} items)",
+            news_items=news_items,
+        )
+
+    client = make_client(cfg)
+    if client is None:
+        click.echo("ANTHROPIC_API_KEY required to render the voice script.", err=True)
+        sys.exit(1)
+
+    notifier = TwilioTtsNotifier(
+        account_sid=cfg.twilio_account_sid or "",
+        auth_token=cfg.twilio_auth_token or "",
+        from_number=cfg.twilio_from_number or "",
+        to_number=cfg.twilio_to_number or "",
+        voice=cfg.twilio_voice,
+        anthropic_client=client,
+    )
+    click.echo(f"Placing call to {cfg.twilio_to_number}...")
+    result = notifier.send(payload)
+    if result.status == "sent":
+        click.echo("OK — answer your phone.")
+    else:
+        click.echo(f"FAILED: {result.error}", err=True)
+        sys.exit(2)
+    conn.close()
+
+
+@main.command("test-call")
+@click.pass_context
+def test_call_cmd(ctx: click.Context) -> None:
+    """Place a 1-line test call to TWILIO_TO_NUMBER. Verifies Twilio creds."""
+    cfg: config_mod.Config = ctx.obj["config"]
+    missing = cfg.missing_keys_for_voice()
+    if missing:
+        click.echo(f"Voice channel not configured. Missing: {', '.join(missing)}", err=True)
+        sys.exit(1)
+    notifier = TwilioTtsNotifier(
+        account_sid=cfg.twilio_account_sid or "",
+        auth_token=cfg.twilio_auth_token or "",
+        from_number=cfg.twilio_from_number or "",
+        to_number=cfg.twilio_to_number or "",
+        voice=cfg.twilio_voice,
+        anthropic_client=None,  # type: ignore[arg-type]  # not used by send_test
+    )
+    click.echo(f"Placing test call from {cfg.twilio_from_number} to {cfg.twilio_to_number}...")
+    result = notifier.send_test()
+    if result.status == "sent":
+        click.echo("OK — answer your phone.")
+    else:
+        click.echo(f"FAILED: {result.error}", err=True)
+        sys.exit(2)
+
+
 @main.command("study-queue")
 @click.pass_context
 def study_queue_cmd(ctx: click.Context) -> None:
@@ -712,7 +843,11 @@ def study_queue_cmd(ctx: click.Context) -> None:
 @main.command("run")
 @click.pass_context
 def run(ctx: click.Context) -> None:
-    """Run the full pipeline: detect → transcribe → analyze → scout → digest."""
+    """Run the full pipeline: detect → transcribe → analyze → scout → digest.
+
+    Voice (Twilio) and email (Yahoo SMTP) notifications fire as part of the
+    digest step if their respective creds are configured.
+    """
     cfg: config_mod.Config = ctx.obj["config"]
     dry_run: bool = ctx.obj["dry_run"]
     if not cfg.db_path.exists():

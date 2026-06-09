@@ -57,6 +57,13 @@ class Config:
     yahoo_app_password: str | None
     digest_recipient: str | None
 
+    # Twilio voice channel (v1.5)
+    twilio_account_sid: str | None
+    twilio_auth_token: str | None
+    twilio_from_number: str | None
+    twilio_to_number: str | None
+    twilio_voice: str
+
     # Runtime knobs
     digest_timezone: str
     digest_hour: int
@@ -87,6 +94,29 @@ class Config:
             missing.append("YAHOO_APP_PASSWORD")
         if not self.digest_recipient:
             missing.append("DIGEST_RECIPIENT")
+        return missing
+
+    def is_complete_for_voice(self) -> bool:
+        return all([
+            self.anthropic_api_key,
+            self.twilio_account_sid,
+            self.twilio_auth_token,
+            self.twilio_from_number,
+            self.twilio_to_number,
+        ])
+
+    def missing_keys_for_voice(self) -> list[str]:
+        missing = []
+        if not self.anthropic_api_key:
+            missing.append("ANTHROPIC_API_KEY")
+        if not self.twilio_account_sid:
+            missing.append("TWILIO_ACCOUNT_SID")
+        if not self.twilio_auth_token:
+            missing.append("TWILIO_AUTH_TOKEN")
+        if not self.twilio_from_number:
+            missing.append("TWILIO_FROM_NUMBER")
+        if not self.twilio_to_number:
+            missing.append("TWILIO_TO_NUMBER")
         return missing
 
 
@@ -134,6 +164,12 @@ def load(dotenv_path: Path | None = None) -> Config:
         yahoo_email=os.environ.get("YAHOO_EMAIL") or None,
         yahoo_app_password=os.environ.get("YAHOO_APP_PASSWORD") or None,
         digest_recipient=os.environ.get("DIGEST_RECIPIENT") or None,
+
+        twilio_account_sid=os.environ.get("TWILIO_ACCOUNT_SID") or None,
+        twilio_auth_token=os.environ.get("TWILIO_AUTH_TOKEN") or None,
+        twilio_from_number=os.environ.get("TWILIO_FROM_NUMBER") or None,
+        twilio_to_number=os.environ.get("TWILIO_TO_NUMBER") or None,
+        twilio_voice=os.environ.get("TWILIO_VOICE", "Polly.Joanna"),
 
         digest_timezone=os.environ.get("DIGEST_TIMEZONE", "America/New_York"),
         digest_hour=int(os.environ.get("DIGEST_HOUR", "12")),
