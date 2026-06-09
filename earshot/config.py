@@ -60,6 +60,8 @@ class Config:
     # Runtime knobs
     digest_timezone: str
     digest_hour: int
+    digest_min_news_score: int
+    instant_min_news_score: int
     log_level: str
     max_llm_cost_per_run_usd: float
 
@@ -135,6 +137,8 @@ def load(dotenv_path: Path | None = None) -> Config:
 
         digest_timezone=os.environ.get("DIGEST_TIMEZONE", "America/New_York"),
         digest_hour=int(os.environ.get("DIGEST_HOUR", "12")),
+        digest_min_news_score=int(os.environ.get("DIGEST_MIN_NEWS_SCORE", "3")),
+        instant_min_news_score=int(os.environ.get("INSTANT_MIN_NEWS_SCORE", "5")),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
         max_llm_cost_per_run_usd=float(os.environ.get("MAX_LLM_COST_PER_RUN_USD", "2.00")),
 

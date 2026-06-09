@@ -27,6 +27,8 @@ from earshot.analyzer import (
     select_pending as select_pending_analyze, start_run,
 )
 from earshot.news_scout import scout as run_scout
+from earshot import digest as digest_mod
+from earshot import study_queue as study_queue_mod
 
 
 _XML_TAG_RE = re.compile(r"<[^>]+>")
@@ -592,13 +594,82 @@ def news_cmd(ctx: click.Context, min_score: int | None, state_filter: str | None
     conn.close()
 
 
+@main.command("digest")
+@click.option("--instant", is_flag=True, help="Build instant alerts instead of the daily digest.")
+@click.pass_context
+def digest_cmd(ctx: click.Context, instant: bool) -> None:
+    """Build the digest payload(s). Archives markdown + html under data/digests/.
+
+    Without --dry-run, items are marked notified (state='notified') so they
+    don't appear in subsequent digests. With --dry-run, payloads are still
+    written to disk but the DB is not modified.
+
+    Email delivery happens in module 7 (Yahoo SMTP notifier).
+    """
+    cfg: config_mod.Config = ctx.obj["config"]
+    dry_run: bool = ctx.obj["dry_run"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}.", err=True)
+        sys.exit(1)
+    conn = db_mod.connect(cfg.db_path)
+
+    if instant:
+        payloads = digest_mod.build_instant_alerts(conn, cfg)
+        if not payloads:
+            click.echo("No instant alerts to send.")
+            conn.close()
+            return
+        click.echo(f"Built {len(payloads)} instant alert(s){' (dry-run)' if dry_run else ''}:")
+        for p in payloads:
+            md_path = digest_mod.archive_payload(p, cfg.data_dir)
+            click.echo(f"  {p.digest_type:14s} {p.subject}")
+            click.echo(f"               -> {md_path}")
+            if not dry_run:
+                digest_mod.mark_notified(conn, p)
+    else:
+        payload = digest_mod.build_daily(conn, cfg)
+        if payload is None:
+            click.echo("Nothing to digest (no unnotified summarized videos or scored news above threshold).")
+            conn.close()
+            return
+        md_path = digest_mod.archive_payload(payload, cfg.data_dir)
+        click.echo(f"Built daily digest{' (dry-run)' if dry_run else ''}:")
+        click.echo(f"  subject: {payload.subject}")
+        click.echo(f"  videos:  {len(payload.videos)}")
+        click.echo(f"  news:    {len(payload.news_items)}")
+        click.echo(f"  archive: {md_path}")
+        if not dry_run:
+            digest_mod.mark_notified(conn, payload)
+
+    # Always regenerate the study queue after a digest run.
+    sq_path = config_mod.REPO_ROOT / "study_queue.md"
+    n = study_queue_mod.write_file(conn, sq_path)
+    click.echo(f"  study_queue.md updated ({n} terms) -> {sq_path}")
+    conn.close()
+
+
+@main.command("study-queue")
+@click.pass_context
+def study_queue_cmd(ctx: click.Context) -> None:
+    """Re-export the glossary as study_queue.md in the repo root."""
+    cfg: config_mod.Config = ctx.obj["config"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}.", err=True)
+        sys.exit(1)
+    conn = db_mod.connect(cfg.db_path)
+    sq_path = config_mod.REPO_ROOT / "study_queue.md"
+    n = study_queue_mod.write_file(conn, sq_path)
+    click.echo(f"Wrote {n} term(s) to {sq_path}")
+    conn.close()
+
+
 @main.command("run")
 @click.pass_context
 def run(ctx: click.Context) -> None:
-    """Run the full pipeline. (Not yet implemented — module 6+.)"""
+    """Run the full pipeline. (Not yet implemented — module 7+.)"""
     dry_run: bool = ctx.obj["dry_run"]
     click.echo(f"`earshot run` is not implemented yet (dry_run={dry_run}).")
-    click.echo("Modules 6+ will add digest + email delivery. Available now:")
+    click.echo("Module 7 will add email delivery. Available now:")
     click.echo("  earshot init-db")
     click.echo("  earshot status")
     click.echo("  earshot channels")
@@ -610,6 +681,8 @@ def run(ctx: click.Context) -> None:
     click.echo("  earshot show VIDEO_ID")
     click.echo("  earshot scout [--skip-scoring]")
     click.echo("  earshot news [--min-score N] [--state X] [-n N]")
+    click.echo("  earshot digest [--instant] [--dry-run]")
+    click.echo("  earshot study-queue")
 
 
 if __name__ == "__main__":
