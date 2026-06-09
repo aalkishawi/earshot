@@ -29,6 +29,8 @@ from earshot.analyzer import (
 from earshot.news_scout import scout as run_scout
 from earshot import digest as digest_mod
 from earshot import study_queue as study_queue_mod
+from earshot.notifier import make_notifier
+from earshot.notifier.email_yahoo import EmailYahooNotifier
 
 
 _XML_TAG_RE = re.compile(r"<[^>]+>")
@@ -613,6 +615,9 @@ def digest_cmd(ctx: click.Context, instant: bool) -> None:
         sys.exit(1)
     conn = db_mod.connect(cfg.db_path)
 
+    notifier = make_notifier(cfg, dry_run=dry_run)
+    click.echo(f"Notifier: {notifier.channel}")
+
     if instant:
         payloads = digest_mod.build_instant_alerts(conn, cfg)
         if not payloads:
@@ -622,10 +627,19 @@ def digest_cmd(ctx: click.Context, instant: bool) -> None:
         click.echo(f"Built {len(payloads)} instant alert(s){' (dry-run)' if dry_run else ''}:")
         for p in payloads:
             md_path = digest_mod.archive_payload(p, cfg.data_dir)
+            result = notifier.send(p)
             click.echo(f"  {p.digest_type:14s} {p.subject}")
-            click.echo(f"               -> {md_path}")
+            click.echo(f"               archive: {md_path}")
+            click.echo(f"               send:    {result.status} via {result.channel}"
+                       + (f" -> {result.recipient}" if result.recipient and result.recipient != 'stdout' else "")
+                       + (f"  ERROR: {result.error}" if result.error else ""))
             if not dry_run:
-                digest_mod.mark_notified(conn, p)
+                digest_mod.record_alert(
+                    conn, p, channel=result.channel, recipient=result.recipient,
+                    status=result.status, payload_path=md_path, error=result.error,
+                )
+                if result.status == "sent":
+                    digest_mod.mark_notified(conn, p)
     else:
         payload = digest_mod.build_daily(conn, cfg)
         if payload is None:
@@ -633,19 +647,51 @@ def digest_cmd(ctx: click.Context, instant: bool) -> None:
             conn.close()
             return
         md_path = digest_mod.archive_payload(payload, cfg.data_dir)
+        result = notifier.send(payload)
         click.echo(f"Built daily digest{' (dry-run)' if dry_run else ''}:")
         click.echo(f"  subject: {payload.subject}")
         click.echo(f"  videos:  {len(payload.videos)}")
         click.echo(f"  news:    {len(payload.news_items)}")
         click.echo(f"  archive: {md_path}")
+        click.echo(f"  send:    {result.status} via {result.channel}"
+                   + (f" -> {result.recipient}" if result.recipient and result.recipient != 'stdout' else "")
+                   + (f"  ERROR: {result.error}" if result.error else ""))
         if not dry_run:
-            digest_mod.mark_notified(conn, payload)
+            digest_mod.record_alert(
+                conn, payload, channel=result.channel, recipient=result.recipient,
+                status=result.status, payload_path=md_path, error=result.error,
+            )
+            if result.status == "sent":
+                digest_mod.mark_notified(conn, payload)
 
     # Always regenerate the study queue after a digest run.
     sq_path = config_mod.REPO_ROOT / "study_queue.md"
     n = study_queue_mod.write_file(conn, sq_path)
     click.echo(f"  study_queue.md updated ({n} terms) -> {sq_path}")
     conn.close()
+
+
+@main.command("test-email")
+@click.pass_context
+def test_email_cmd(ctx: click.Context) -> None:
+    """Send a one-line test email to DIGEST_RECIPIENT. Verifies SMTP creds work."""
+    cfg: config_mod.Config = ctx.obj["config"]
+    missing = cfg.missing_keys_for_email()
+    if missing:
+        click.echo(f"Email not configured. Missing: {', '.join(missing)}", err=True)
+        sys.exit(1)
+    notifier = EmailYahooNotifier(
+        sender_email=cfg.yahoo_email or "",
+        app_password=cfg.yahoo_app_password or "",
+        recipient=cfg.digest_recipient or "",
+    )
+    click.echo(f"Sending test email from {cfg.yahoo_email} to {cfg.digest_recipient}...")
+    result = notifier.send_test()
+    if result.status == "sent":
+        click.echo("OK — check your inbox.")
+    else:
+        click.echo(f"FAILED: {result.error}", err=True)
+        sys.exit(2)
 
 
 @main.command("study-queue")
@@ -666,23 +712,26 @@ def study_queue_cmd(ctx: click.Context) -> None:
 @main.command("run")
 @click.pass_context
 def run(ctx: click.Context) -> None:
-    """Run the full pipeline. (Not yet implemented — module 7+.)"""
+    """Run the full pipeline: detect → transcribe → analyze → scout → digest."""
+    cfg: config_mod.Config = ctx.obj["config"]
     dry_run: bool = ctx.obj["dry_run"]
-    click.echo(f"`earshot run` is not implemented yet (dry_run={dry_run}).")
-    click.echo("Module 7 will add email delivery. Available now:")
-    click.echo("  earshot init-db")
-    click.echo("  earshot status")
-    click.echo("  earshot channels")
-    click.echo("  earshot resolve-channel @somehandle")
-    click.echo("  earshot detect [--dry-run] [--channel @handle]")
-    click.echo("  earshot videos [--state X] [-n N] [--priority-only]")
-    click.echo("  earshot transcribe [-n N] [--video-id ID]")
-    click.echo("  earshot analyze [-n N] [--video-id ID] [--dry-run]")
-    click.echo("  earshot show VIDEO_ID")
-    click.echo("  earshot scout [--skip-scoring]")
-    click.echo("  earshot news [--min-score N] [--state X] [-n N]")
-    click.echo("  earshot digest [--instant] [--dry-run]")
-    click.echo("  earshot study-queue")
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}. Run `earshot init-db` first.", err=True)
+        sys.exit(1)
+
+    click.echo(f"=== earshot run {'(dry-run)' if dry_run else ''} ===")
+    click.echo("")
+    ctx.invoke(detect_cmd, channel_filter=None)
+    click.echo("")
+    ctx.invoke(transcribe_cmd, limit=None, video_id=None)
+    click.echo("")
+    ctx.invoke(analyze_cmd, limit=None, video_id=None)
+    click.echo("")
+    ctx.invoke(scout_cmd, skip_scoring=False)
+    click.echo("")
+    ctx.invoke(digest_cmd, instant=True)
+    click.echo("")
+    ctx.invoke(digest_cmd, instant=False)
 
 
 if __name__ == "__main__":

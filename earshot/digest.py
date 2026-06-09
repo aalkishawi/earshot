@@ -246,6 +246,32 @@ def mark_notified(conn: sqlite3.Connection, payload: DigestPayload) -> None:
         )
 
 
+def record_alert(
+    conn: sqlite3.Connection,
+    payload: DigestPayload,
+    *,
+    channel: str,
+    recipient: str,
+    status: str,
+    payload_path: Path | str | None,
+    error: str | None = None,
+    run_id: int | None = None,
+) -> None:
+    """Append a row to the alerts table for audit."""
+    conn.execute(
+        """
+        INSERT INTO alerts
+            (type, channel, recipient, subject, payload_path, status, sent_at, error, run_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            payload.digest_type, channel, recipient, payload.subject,
+            str(payload_path) if payload_path else None,
+            status, utcnow_iso(), error, run_id,
+        ),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Renderers — markdown
 # --------------------------------------------------------------------------- #
