@@ -4,11 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "earshot"
-version = "0.1.0"
-description = "Podcast and AI-news intelligence agent — monitors YouTube podcasts, summarizes episodes, extracts new concepts, scouts AI news, delivers via email."
+version = "0.2.0"
+description = "Podcast and AI-news intelligence agent — monitors YouTube podcasts, summarizes episodes, extracts new concepts, scouts AI news, delivers via email and outbound voice call."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "a_alkishawi", email = "a_alkishawi@yahoo.com" }]
+keywords = ["podcast", "ai", "news", "digest", "claude", "summarization", "twilio", "youtube"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
 dependencies = [
     "anthropic>=0.40",
     "click>=8.1",
@@ -20,6 +37,10 @@ dependencies = [
     "tzdata>=2024.1; sys_platform == 'win32'",
     "yt-dlp>=2024.10.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/aalkishawi/earshot"
+Issues = "https://github.com/aalkishawi/earshot/issues"
 
 [project.scripts]
 earshot = "earshot.cli:main"

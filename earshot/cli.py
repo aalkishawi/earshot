@@ -18,6 +18,15 @@ import click
 import json
 import re
 
+# Windows console defaults to cp1252 which can't encode characters like
+# `→`, `—`, `…` that appear in help text and echoed output. Force UTF-8
+# at the wrapper layer; downstream code can use unicode freely.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+except Exception:
+    pass
+
 from earshot import __version__, config as config_mod, db as db_mod
 from earshot.channel_resolver import ChannelResolutionError, resolve_handle
 from earshot.detector import detect_all
@@ -32,6 +41,9 @@ from earshot import study_queue as study_queue_mod
 from earshot.notifier import make_notifiers
 from earshot.notifier.email_yahoo import EmailYahooNotifier
 from earshot.notifier.twilio_voice import TwilioTtsNotifier
+from earshot import doctor as doctor_mod
+from earshot import scheduler as scheduler_mod
+from earshot import wizard as wizard_mod
 
 
 _XML_TAG_RE = re.compile(r"<[^>]+>")
@@ -85,6 +97,89 @@ def main(ctx: click.Context, dry_run: bool) -> None:
     ctx.ensure_object(dict)
     ctx.obj["dry_run"] = dry_run
     ctx.obj["config"] = config_mod.load()
+
+
+@main.command("init")
+def init_cmd() -> None:
+    """Interactive setup wizard — first-time configuration for a new install."""
+    wizard_mod.run_wizard()
+
+
+@main.command("doctor")
+@click.pass_context
+def doctor_cmd(ctx: click.Context) -> None:
+    """Diagnose configuration. Reports green/red status for every service."""
+    cfg: config_mod.Config = ctx.obj["config"]
+    results = doctor_mod.run_all(cfg)
+    click.echo("")
+    n_fail = n_warn = n_ok = n_skip = 0
+    for r in results:
+        if r.status == "ok":
+            mark = click.style("[OK]  ", fg="green")
+            n_ok += 1
+        elif r.status == "skip":
+            mark = click.style("[--]  ", fg="white")
+            n_skip += 1
+        elif r.status == "warn":
+            mark = click.style("[WARN]", fg="yellow")
+            n_warn += 1
+        else:
+            mark = click.style("[FAIL]", fg="red")
+            n_fail += 1
+        click.echo(f"  {mark}  {r.name:14s}  {r.message}")
+        if r.hint and r.status in ("warn", "fail"):
+            click.echo(f"          hint: {r.hint}")
+    click.echo("")
+    click.echo(
+        f"  Summary: {n_ok} ok, {n_warn} warn, {n_fail} fail, {n_skip} skipped"
+    )
+    if n_fail:
+        sys.exit(1)
+
+
+@main.command("schedule")
+@click.option("--at", "at_time", default="18:30", help="Local time HH:MM (default 18:30 = 11:30 EDT from AST).")
+@click.option("--remove", is_flag=True, help="Unregister the scheduled task.")
+@click.pass_context
+def schedule_cmd(ctx: click.Context, at_time: str, remove: bool) -> None:
+    """Register a daily Windows Task Scheduler entry that runs `earshot run`.
+
+    On non-Windows, prints a cron line you can paste into `crontab -e`.
+    """
+    cfg: config_mod.Config = ctx.obj["config"]
+
+    if remove:
+        if not scheduler_mod.is_windows():
+            click.echo("Nothing to do on non-Windows — remove the cron line yourself.")
+            return
+        ok, msg = scheduler_mod.unregister_windows()
+        click.echo(msg)
+        if not ok:
+            sys.exit(1)
+        return
+
+    if not scheduler_mod.is_windows():
+        click.echo("Detected non-Windows. Paste this into `crontab -e`:")
+        click.echo("")
+        try:
+            hh, mm = at_time.split(":")
+            click.echo(scheduler_mod.cron_line_for_unix(cfg, int(hh), int(mm)))
+        except ValueError:
+            click.echo("Invalid --at format. Use HH:MM (24h).", err=True)
+            sys.exit(1)
+        return
+
+    try:
+        hh, mm = at_time.split(":")
+        hour, minute = int(hh), int(mm)
+    except ValueError:
+        click.echo("Invalid --at format. Use HH:MM (24h).", err=True)
+        sys.exit(1)
+
+    ok, msg = scheduler_mod.register_windows(cfg, hour, minute)
+    click.echo(msg)
+    if not ok:
+        sys.exit(1)
 
 
 @main.command("init-db")

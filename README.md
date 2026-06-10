@@ -1,116 +1,189 @@
 # Earshot
 
-Podcast & AI-news intelligence agent. Monitors a configurable list of YouTube
-podcast channels, summarizes new episodes, extracts new concepts/tools/people
-to study, scouts the web for AI news, and delivers everything by email.
+A personal AI agent that listens to the podcasts you don't have time for,
+extracts what's worth studying, scouts AI news, and delivers a daily briefing
+to your inbox — and, if you want it, your phone.
 
-Build status: **module 1 of 8** — skeleton + SQLite schema + config. The
-pipeline itself (`earshot run`) is wired up over modules 2–7.
+Earshot runs on your own machine, billed against your own API keys. No SaaS
+sign-up. No data leaving your laptop except to the providers you configure
+yourself (Anthropic, Yahoo, optionally Twilio and Groq).
 
-## Setup
-
-Requires Python 3.11+. For the audio-ASR fallback path (module 3), also install
-ffmpeg — on Windows the easiest path is `winget install Gyan.FFmpeg`. yt-dlp
-uses ffmpeg to extract audio from the downloaded stream. If captions are
-available for a video, ffmpeg is not invoked.
+## Trial users start here
 
 ```powershell
-# from the repo root
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .
+# 1. install (Python 3.11+ required)
+pip install git+https://github.com/aalkishawi/earshot.git
 
-# create the database
-earshot init-db
+# 2. interactive setup — asks for API keys, tests them as it goes,
+#    walks you through adding at least one channel
+earshot init
 
-# verify config + see what's wired up
-earshot status
+# 3. try it
+earshot run
+
+# 4. (optional) schedule a daily run at 18:30 local time
+earshot schedule
+
+# any time after — diagnose configuration
+earshot doctor
 ```
 
-Copy `.env.example` to `.env` and fill in keys as you reach each module:
+That's it. After `earshot init` you'll have a `.env` (gitignored, safe to
+keep secrets in), a SQLite database, and at least one YouTube channel queued
+up. After `earshot run` the first time, ~30 seconds later you should have a
+digest email in your inbox.
 
-| Variable | Needed at | Where to get it |
+### What it costs you
+
+You bring your own API keys. The defaults are calibrated for cheapest viable:
+
+| Service | What for | Realistic monthly cost |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | module 4 (analyzer) | https://console.anthropic.com |
-| `YAHOO_EMAIL` | module 7 (email) | your Yahoo address |
-| `YAHOO_APP_PASSWORD` | module 7 (email) | Yahoo Account Security → app passwords |
-| `DIGEST_RECIPIENT` | module 7 (email) | where the digest is delivered |
-| `GROQ_API_KEY` | module 3 (transcriber fallback) | https://console.groq.com |
+| Anthropic (Claude Haiku 4.5) | Summarization, concept extraction, news scoring, voice script | ~$1–2 |
+| Yahoo SMTP | Email digest delivery | free |
+| Groq Whisper (optional) | Audio transcription fallback when a video has no captions | ~$0 (free tier covers most use) |
+| Twilio (optional, v1.5) | Outbound voice call with a 90-second briefing | ~$1.60 (1 number + 1 call/day) |
 
-## CLI
+At typical volume (3–5 podcast channels, 20 daily AI news items), total
+operational cost lands at **~$3/month**.
+
+## What it does
+
+1. **Detects new podcast uploads** by polling YouTube RSS feeds (no API quota).
+2. **Transcribes** them — manual captions first, auto-captions next, Groq
+   Whisper ASR only if neither exists.
+3. **Summarizes + extracts concepts** via Claude Haiku 4.5. Maintains a
+   persistent glossary so terms you've already encountered don't get
+   re-alerted.
+4. **Scouts AI news** from a curated RSS list (Anthropic, OpenAI, DeepMind,
+   Hugging Face, Simon Willison, Latent Space, Import AI) plus Hacker News
+   stories above a points threshold.
+5. **Scores news for relevance** (1–5 importance) — landmark items fire
+   instant alerts; everything else lands in the daily digest.
+6. **Delivers** by email and (optionally) by outbound voice call. The voice
+   path uses a separate ~90-second voice-tailored script — not the long email.
+7. **Logs everything**: token use, cost per run, sent alerts, processed
+   videos. Inspect with `earshot status`, `earshot videos`, `earshot news`.
+
+## CLI reference
 
 ```
-earshot status                       # config + db health
-earshot init-db                      # create / re-apply schema (idempotent)
-earshot channels                     # show configured channels + RSS URLs
-earshot resolve-channel @somehandle  # look up a channel ID
-earshot run --dry-run                # full pipeline (module 2+)
+# first-time setup
+earshot init                                 # interactive setup wizard
+earshot init-db                              # apply schema only (idempotent)
+earshot doctor                               # green/red status of every service
+
+# pipeline (manual)
+earshot detect [--channel @handle]           # poll RSS for new uploads
+earshot transcribe [-n N] [--video-id ID]    # transcribe pending videos
+earshot analyze   [-n N] [--video-id ID]     # Claude summary + concepts
+earshot scout                                # AI news fetch + relevance scoring
+earshot digest [--instant]                   # build + send daily / instant digest
+earshot run                                  # all of the above in sequence
+
+# voice replay (no DB / email side-effects)
+earshot call --video-id ID                   # voice-call a specific episode
+earshot call --news-id N                     # voice-call a specific news item
+earshot call --daily                         # voice-call today's digest content
+
+# inspection
+earshot status                               # config + DB health
+earshot channels                             # configured channels + RSS URLs
+earshot videos [--state X] [--priority-only] # videos table
+earshot news   [--min-score N] [--state X]   # news table
+earshot show VIDEO_ID                        # pretty-print stored analysis
+earshot study-queue                          # regenerate study_queue.md
+
+# scheduling
+earshot schedule [--at HH:MM]                # register Windows Task / cron
+earshot schedule --remove                    # unregister
+
+# credential tests
+earshot test-email                           # one-line email to verify SMTP
+earshot test-call                            # one-ring call to verify Twilio
 ```
 
-## Channels
+## Configuration
 
-Edit `channels.yaml`. Each channel:
+After `earshot init`, your `.env` looks like:
+
+```
+# Required
+ANTHROPIC_API_KEY=sk-ant-...
+YAHOO_EMAIL=you@yahoo.com
+YAHOO_APP_PASSWORD=xxxxxxxxxxxxxxxx
+DIGEST_RECIPIENT=you@example.com
+
+# Optional — voice channel
+TWILIO_ACCOUNT_SID=AC...
+TWILIO_AUTH_TOKEN=...
+TWILIO_FROM_NUMBER=+1...
+TWILIO_TO_NUMBER=+1...
+TWILIO_VOICE=Polly.Joanna
+
+# Optional — ASR fallback
+GROQ_API_KEY=...
+
+# Tuning
+DIGEST_TIMEZONE=America/New_York
+DIGEST_HOUR=12
+DIGEST_MIN_NEWS_SCORE=3       # 1-5; daily digest threshold
+INSTANT_MIN_NEWS_SCORE=5      # 1-5; instant alert threshold
+MAX_LLM_COST_PER_RUN_USD=2.00
+```
+
+Channels live in `channels.yaml`. Add one with the wizard, or:
 
 ```yaml
 - handle: "@AIDailyBrief"
   channel_id: UCKelCK4ZaO6HeEI1KQjqzWA
   name: "The AI Daily Brief"
-  priority: 2          # 1 = digest only, 2 = also fires instant alerts
-  keywords: []         # title substrings that force high-priority for one video
+  priority: 2                  # 2 = also fires instant alerts on new episodes
+  keywords: []                 # title substrings that force a single video to priority
 ```
 
-Use `earshot resolve-channel @handle` to get the `channel_id` for a new entry.
+`earshot resolve-channel @somehandle` looks up `channel_id` for any handle.
 
-## Running daily on Windows
+## Notes for trial testers
 
-For a one-off run, just call `earshot run` in PowerShell. To have it fire
-automatically once a day, register a scheduled task pointing at
-`scripts/run_earshot.ps1` (the wrapper logs to `data/logs/earshot-<date>.log`).
+- **Yahoo "Primary" tab**: the digest may land in your "All" inbox tab
+  instead of "Primary" because of HTML + outbound links. Check both. After
+  marking it Not Spam once, future digests usually land in Primary.
+- **Twilio trial accounts** can only dial verified numbers. If
+  `earshot test-call` fails with code 21219, verify the TO number at
+  console.twilio.com → Phone Numbers → Verified Caller IDs.
+- **First scout run** baselines several thousand existing items as
+  `skipped` so it doesn't LLM-score historical posts. From the second run
+  onward you only see genuinely new items.
+- **Cost cap**: `MAX_LLM_COST_PER_RUN_USD` (default $2) aborts a single run
+  if Claude spending crosses it. Adjust upward if you're catching up on a
+  large backlog.
 
-```powershell
-# Register the daily task — paste in PowerShell (no admin needed).
-# 18:30 Arab Standard Time = 11:30 US Eastern Daylight Time.
-$action = New-ScheduledTaskAction `
-    -Execute 'powershell.exe' `
-    -Argument '-NoProfile -ExecutionPolicy Bypass -File "D:\AshrafsProjects\earshot\scripts\run_earshot.ps1"'
+## Architecture
 
-$trigger = New-ScheduledTaskTrigger -Daily -At 18:30
-
-$settings = New-ScheduledTaskSettingsSet `
-    -StartWhenAvailable -WakeToRun `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
-    -MultipleInstances IgnoreNew
-
-$principal = New-ScheduledTaskPrincipal `
-    -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-
-Register-ScheduledTask `
-    -TaskName 'Earshot Daily Digest' `
-    -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
-    -Description 'Earshot v1 full pipeline — detect, summarize, scout, email digest.'
+```
+[channels.yaml] [news_sources.yaml]
+       │              │
+       ▼              ▼
+┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐
+│  Detector  │─▶│ Transcriber│─▶│  Analyzer  │─▶│  Digest    │
+│ (RSS poll) │  │  (yt-dlp + │  │  (Claude   │  │  Builder   │
+│            │  │  Groq ASR) │  │  Haiku)    │  │            │
+└────────────┘  └────────────┘  └────────────┘  └─────┬──────┘
+                                                      │
+┌────────────┐         ┌──────────────────────┐       │
+│  News      │────────▶│  SQLite              │◀──────┤
+│  Scout     │         │  (state + history)   │       │
+└────────────┘         └──────────────────────┘       │
+                                                      ▼
+                                            ┌─────────────────┐
+                                            │  Notifiers      │
+                                            │  email + voice  │
+                                            │  (Slack/Retell  │
+                                            │   future)       │
+                                            └─────────────────┘
 ```
 
-Verify and trigger an immediate test:
+## License
 
-```powershell
-Get-ScheduledTask     -TaskName 'Earshot Daily Digest'
-Start-ScheduledTask   -TaskName 'Earshot Daily Digest'
-Get-ScheduledTaskInfo -TaskName 'Earshot Daily Digest'   # LastTaskResult should be 0
-Unregister-ScheduledTask -TaskName 'Earshot Daily Digest' -Confirm:$false   # to remove
-```
-
-DST note: when US falls back to standard time in November, 18:30 AST becomes
-10:30 EST instead of 11:30 EDT. If that matters, shift the trigger to 19:30.
-
-## Roadmap
-
-1. ✅ **Module 1** — package skeleton, SQLite schema, config, CLI
-2. ✅ **Module 2** — RSS detector (idempotent new-video detection)
-3. ✅ **Module 3** — transcriber (yt-dlp captions → Groq Whisper ASR fallback)
-4. ✅ **Module 4** — analyzer (Claude: summary + concept extraction; glossary dedup)
-5. ✅ **Module 5** — AI news scout
-6. ✅ **Module 6** — digest builder + `study_queue.md`
-7. ✅ **Module 7** — Yahoo SMTP notifier, scheduler entry point
-
-**v1 shipped.** Phone (Twilio TTS in v1.5, Retell in v2) plugs in via the
-`Notifier` interface — no rewrites needed.
+MIT. See [LICENSE](LICENSE).
