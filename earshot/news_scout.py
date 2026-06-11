@@ -97,12 +97,64 @@ def _clean_html(text: str, max_chars: int = 800) -> str:
     return text
 
 
+def _is_transient_network_error(exc: Exception) -> bool:
+    """Heuristic: TCP resets, timeouts, DNS hiccups, and 5xx errors are
+    typically transient and worth a single retry; XML parse errors are not."""
+    if exc is None:
+        return False
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    if name in {"URLError", "ConnectionResetError", "ConnectionError", "TimeoutError"}:
+        return True
+    if "winerror 10054" in msg or "connection reset" in msg:
+        return True
+    if "timed out" in msg or "timeout" in msg:
+        return True
+    if "temporary failure" in msg or "name or service not known" in msg:
+        return True
+    if "500" in msg or "502" in msg or "503" in msg or "504" in msg:
+        return True
+    return False
+
+
+def _feedparser_with_retry(
+    url: str,
+    max_attempts: int = 3,
+    base_backoff_seconds: float = 1.0,
+):
+    """Retry feedparser on transient network errors.
+
+    ``feedparser.parse`` swallows exceptions and stuffs them on
+    ``parsed.bozo_exception``. We treat "bozo + no entries + transient
+    exception" as a retryable failure with exponential backoff. XML parse
+    errors (bozo with non-network exception) and successful fetches both
+    return immediately.
+    """
+    parsed = None
+    for attempt in range(max_attempts):
+        parsed = feedparser.parse(url, agent=USER_AGENT)
+        if parsed.entries:
+            return parsed
+        exc = getattr(parsed, "bozo_exception", None)
+        if not (exc and _is_transient_network_error(exc)):
+            return parsed
+        if attempt >= max_attempts - 1:
+            return parsed
+        delay = base_backoff_seconds * (2 ** attempt)
+        log.info(
+            "rss fetch transient error for %s (attempt %d/%d): %s — retrying in %.1fs",
+            url, attempt + 1, max_attempts, exc, delay,
+        )
+        time.sleep(delay)
+    return parsed
+
+
 def fetch_rss(source: dict[str, Any]) -> list[NewsItem]:
     name = source.get("name", "?")
     url = source.get("url")
     if not url:
         raise ValueError(f"rss source '{name}' has no url")
-    parsed = feedparser.parse(url, agent=USER_AGENT)
+    parsed = _feedparser_with_retry(url)
     if parsed.bozo and not parsed.entries:
         raise RuntimeError(
             f"feedparser failed for {url}: {parsed.bozo_exception}"

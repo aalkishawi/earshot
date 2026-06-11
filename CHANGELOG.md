@@ -7,6 +7,12 @@ phase, so minor bumps may introduce breaking changes when needed).
 
 ## [Unreleased]
 
+### Changed
+- News scout RSS fetcher retries up to 3 times with exponential backoff
+  (1s → 2s → 4s) on transient network errors. Hugging Face's feed has
+  been intermittently failing with `[WinError 10054]` mid-fetch; that
+  noise no longer surfaces unless it persists across all attempts.
+
 ## [0.3.1] — 2026-06-11
 
 ### Fixed
