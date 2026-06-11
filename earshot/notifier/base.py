@@ -9,7 +9,7 @@ from earshot.digest import DigestPayload
 
 @dataclass
 class AlertResult:
-    status: str           # 'sent' | 'failed' | 'dry_run'
+    status: str           # 'sent' | 'failed' | 'dry_run' | 'skipped'
     channel: str          # 'email' | 'stdout' | 'twilio' | ...
     recipient: str = ""
     error: str | None = None

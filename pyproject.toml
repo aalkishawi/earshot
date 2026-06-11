@@ -29,12 +29,15 @@ classifiers = [
 dependencies = [
     "anthropic>=0.40",
     "click>=8.1",
+    "fastapi>=0.115",
     "feedparser>=6.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
+    "python-multipart>=0.0.20",
     "requests>=2.31",
     "twilio>=9.0",
     "tzdata>=2024.1; sys_platform == 'win32'",
+    "uvicorn[standard]>=0.30",
     "yt-dlp>=2024.10.0",
 ]
 

@@ -41,6 +41,7 @@ from earshot import study_queue as study_queue_mod
 from earshot.notifier import make_notifiers
 from earshot.notifier.email_yahoo import EmailYahooNotifier
 from earshot.notifier.twilio_voice import TwilioTtsNotifier
+from earshot.notifier.twilio_interactive import TwilioInteractiveNotifier
 from earshot import doctor as doctor_mod
 from earshot import scheduler as scheduler_mod
 from earshot import wizard as wizard_mod
@@ -135,6 +136,43 @@ def doctor_cmd(ctx: click.Context) -> None:
     )
     if n_fail:
         sys.exit(1)
+
+
+@main.command("webhook")
+@click.option("--host", default=None, help="Bind host (default from EARSHOT_WEBHOOK_HOST).")
+@click.option("--port", default=None, type=int, help="Bind port (default from EARSHOT_WEBHOOK_PORT).")
+@click.option("--reload", is_flag=True, help="Auto-reload on code changes (dev only).")
+@click.pass_context
+def webhook_cmd(ctx: click.Context, host: str | None, port: int | None, reload: bool) -> None:
+    """Run the interactive-call webhook server (v2).
+
+    Expose this via ``ngrok http <port>`` during development and set the
+    resulting URL as ``EARSHOT_WEBHOOK_URL`` in .env. Twilio hits this server
+    to drive the conversation turn-by-turn.
+    """
+    cfg: config_mod.Config = ctx.obj["config"]
+    if not cfg.webhook_url:
+        click.echo(
+            "EARSHOT_WEBHOOK_URL is not set. Start ngrok (`ngrok http "
+            f"{cfg.webhook_port}`), then set the https URL in .env.",
+            err=True,
+        )
+        sys.exit(1)
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo("uvicorn is not installed. Reinstall earshot: `pip install -e .`", err=True)
+        sys.exit(1)
+    host = host or cfg.webhook_host
+    port = port or cfg.webhook_port
+    click.echo(f"Earshot webhook on http://{host}:{port}  (public: {cfg.webhook_url})")
+    click.echo(f"  signature validation: {'ON' if cfg.webhook_validate_signature else 'OFF'}")
+    click.echo(f"  caps: {cfg.webhook_max_turns} turns / {cfg.webhook_max_call_seconds}s per call")
+    if reload:
+        uvicorn.run("earshot.webhook.app:create_app", host=host, port=port, reload=True, factory=True)
+    else:
+        from earshot.webhook.app import create_app
+        uvicorn.run(create_app(cfg), host=host, port=port, log_level=cfg.log_level.lower())
 
 
 @main.command("schedule")
@@ -712,7 +750,7 @@ def digest_cmd(ctx: click.Context, instant: bool) -> None:
     conn = db_mod.connect(cfg.db_path)
 
     anthropic_client = make_client(cfg)
-    notifiers = make_notifiers(cfg, anthropic_client=anthropic_client, dry_run=dry_run)
+    notifiers = make_notifiers(cfg, conn=conn, anthropic_client=anthropic_client, dry_run=dry_run)
     click.echo(f"Notifiers: {', '.join(n.channel for n in notifiers)}")
 
     def _fanout(p: digest_mod.DigestPayload, md_path) -> bool:
@@ -720,6 +758,11 @@ def digest_cmd(ctx: click.Context, instant: bool) -> None:
         any_sent = False
         for n in notifiers:
             result = n.send(p)
+            # 'skipped' = notifier opted out for this payload (e.g. v1.5 voice
+            # skipping an instant alert when v2 is configured). Stay quiet — no
+            # log line, no alert row.
+            if result.status == "skipped":
+                continue
             click.echo(
                 f"               send:    {result.status} via {result.channel}"
                 + (f" -> {result.recipient}" if result.recipient and result.recipient != 'stdout' else "")
@@ -798,8 +841,19 @@ def test_email_cmd(ctx: click.Context) -> None:
 @click.option("--video-id", default=None, help="Voice-call about a specific video (any state).")
 @click.option("--news-id", default=None, type=int, help="Voice-call about a specific news item.")
 @click.option("--daily", is_flag=True, help="Voice-call the daily digest content (regenerated, not marked notified).")
+@click.option(
+    "--interactive", is_flag=True,
+    help="Place an interactive (v2) call instead of a TTS readout. Requires the webhook server to be running.",
+)
+@click.option(
+    "--yes", "skip_confirm", is_flag=True,
+    help="Skip the interactive-call cost confirmation prompt.",
+)
 @click.pass_context
-def call_cmd(ctx: click.Context, video_id: str | None, news_id: int | None, daily: bool) -> None:
+def call_cmd(
+    ctx: click.Context, video_id: str | None, news_id: int | None,
+    daily: bool, interactive: bool, skip_confirm: bool,
+) -> None:
     """Voice-only call for a specific item or the daily digest.
 
     Does NOT mark items notified and does NOT send email — it just dials the
@@ -875,6 +929,42 @@ def call_cmd(ctx: click.Context, video_id: str | None, news_id: int | None, dail
     if client is None:
         click.echo("ANTHROPIC_API_KEY required to render the voice script.", err=True)
         sys.exit(1)
+
+    if interactive:
+        if not cfg.webhook_url:
+            click.echo(
+                "EARSHOT_WEBHOOK_URL is not set. Start the webhook server "
+                "(`earshot webhook`) behind ngrok and set the URL in .env.",
+                err=True,
+            )
+            sys.exit(1)
+        n_items = len(payload.videos) + len(payload.news_items)
+        est_low = 0.10
+        est_high = 0.14
+        click.echo(
+            f"This will place an INTERACTIVE call covering {n_items} item(s). "
+            f"Estimated cost: ${est_low:.2f}–${est_high:.2f}."
+        )
+        if not skip_confirm and not click.confirm("Proceed?", default=False):
+            click.echo("Aborted.")
+            return
+        notifier = TwilioInteractiveNotifier(
+            conn=conn,
+            account_sid=cfg.twilio_account_sid or "",
+            auth_token=cfg.twilio_auth_token or "",
+            from_number=cfg.twilio_from_number or "",
+            to_number=cfg.twilio_to_number or "",
+            webhook_url=cfg.webhook_url,
+        )
+        click.echo(f"Placing interactive call to {cfg.twilio_to_number}...")
+        result = notifier.send(payload)
+        if result.status == "sent":
+            click.echo("OK — answer your phone. The conversation drives via the webhook.")
+        else:
+            click.echo(f"FAILED: {result.error}", err=True)
+            sys.exit(2)
+        conn.close()
+        return
 
     notifier = TwilioTtsNotifier(
         account_sid=cfg.twilio_account_sid or "",

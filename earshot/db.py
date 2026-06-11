@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 SCHEMA_SQL = """
@@ -104,6 +104,29 @@ CREATE TABLE IF NOT EXISTS alerts (
     error        TEXT,
     run_id       INTEGER REFERENCES runs(id)
 );
+
+-- v2 interactive call sessions. One row per outbound interactive call.
+-- Schema v2.
+CREATE TABLE IF NOT EXISTS interactions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_sid         TEXT UNIQUE,                       -- Twilio CallSid; NULL during dry-run
+    started_at       TEXT NOT NULL,
+    ended_at         TEXT,
+    status           TEXT NOT NULL DEFAULT 'started',   -- started | completed | failed | abandoned
+    -- JSON array of {kind: 'video'|'news', ref_id: str|int} — the items this call covers.
+    item_refs        TEXT NOT NULL DEFAULT '[]',
+    -- JSON array of turns: {turn: int, phase: str, item_ref: {...}|null,
+    --                       question: str, answer_text: str|null, action: str|null}
+    turns            TEXT NOT NULL DEFAULT '[]',
+    -- Free-text journal capture from the closer turn (transcribed).
+    journal_note     TEXT,
+    duration_seconds INTEGER,
+    tokens_in        INTEGER NOT NULL DEFAULT 0,
+    tokens_out       INTEGER NOT NULL DEFAULT 0,
+    cost_usd         REAL    NOT NULL DEFAULT 0.0,
+    error            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_interactions_started ON interactions(started_at);
 """
 
 
@@ -125,7 +148,8 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     row = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
-    if row is None:
+    current = row[0] if row else 0
+    if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
             (SCHEMA_VERSION, utcnow_iso()),

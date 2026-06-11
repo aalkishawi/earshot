@@ -76,6 +76,7 @@ class TwilioTtsNotifier:
         to_number: str,
         voice: str,
         anthropic_client: anthropic.Anthropic | None,
+        defer_instant_to_v2: bool = False,
     ) -> None:
         self._account_sid = account_sid
         self._auth_token = auth_token
@@ -83,8 +84,16 @@ class TwilioTtsNotifier:
         self._to = to_number
         self._voice = voice
         self._anthropic = anthropic_client
+        # When v2 (interactive) is also configured, v2 owns instant alerts and
+        # v1.5 (this notifier) sticks to daily digests. Avoids double-dialing.
+        self._defer_instant_to_v2 = defer_instant_to_v2
 
     def send(self, payload: DigestPayload) -> AlertResult:
+        if self._defer_instant_to_v2 and payload.digest_type.startswith("instant_"):
+            return AlertResult(
+                status="skipped", channel=self.channel, recipient=self._to,
+                error="instant alert handled by voice_interactive (v2)",
+            )
         if self._anthropic is None:
             return AlertResult(
                 status="failed", channel=self.channel, recipient=self._to,

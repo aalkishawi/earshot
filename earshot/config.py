@@ -64,6 +64,14 @@ class Config:
     twilio_to_number: str | None
     twilio_voice: str
 
+    # Interactive-call webhook (v2)
+    webhook_url: str | None             # public base, e.g. https://abc.ngrok-free.app
+    webhook_host: str
+    webhook_port: int
+    webhook_max_call_seconds: int       # hard cap per call
+    webhook_max_turns: int              # secondary cap to bound cost
+    webhook_validate_signature: bool
+
     # Runtime knobs
     digest_timezone: str
     digest_hour: int
@@ -170,6 +178,13 @@ def load(dotenv_path: Path | None = None) -> Config:
         twilio_from_number=os.environ.get("TWILIO_FROM_NUMBER") or None,
         twilio_to_number=os.environ.get("TWILIO_TO_NUMBER") or None,
         twilio_voice=os.environ.get("TWILIO_VOICE", "Polly.Joanna"),
+
+        webhook_url=os.environ.get("EARSHOT_WEBHOOK_URL") or None,
+        webhook_host=os.environ.get("EARSHOT_WEBHOOK_HOST", "127.0.0.1"),
+        webhook_port=int(os.environ.get("EARSHOT_WEBHOOK_PORT", "8765")),
+        webhook_max_call_seconds=int(os.environ.get("EARSHOT_WEBHOOK_MAX_CALL_SECONDS", "300")),
+        webhook_max_turns=int(os.environ.get("EARSHOT_WEBHOOK_MAX_TURNS", "12")),
+        webhook_validate_signature=os.environ.get("EARSHOT_WEBHOOK_VALIDATE_SIGNATURE", "1") not in ("0", "false", "False"),
 
         digest_timezone=os.environ.get("DIGEST_TIMEZONE", "America/New_York"),
         digest_hour=int(os.environ.get("DIGEST_HOUR", "12")),
