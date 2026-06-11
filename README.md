@@ -162,6 +162,7 @@ earshot videos [--state X] [--priority-only] # videos table
 earshot news   [--min-score N] [--state X]   # news table
 earshot show VIDEO_ID                        # pretty-print stored video analysis
 earshot show NEWS_ID                         # same, for a news item (numeric arg)
+earshot runs [-n N] [--status X]             # pipeline run history + Claude spend
 earshot interactions [-n N] [--status X]     # v2 call history
 earshot replay INTERACTION_ID                # full transcript of a v2 call
 earshot study-queue                          # regenerate study_queue.md

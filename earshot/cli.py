@@ -1060,6 +1060,69 @@ def test_call_cmd(ctx: click.Context) -> None:
         sys.exit(2)
 
 
+@main.command("runs")
+@click.option("-n", "limit", default=10, type=int, help="Max rows to show.")
+@click.option("--status", "status_filter", default=None,
+              help="Filter by status: running | ok | failed | capped.")
+@click.pass_context
+def runs_cmd(ctx: click.Context, limit: int, status_filter: str | None) -> None:
+    """List recent pipeline runs — videos/news processed, tokens, cost.
+
+    A 'run' is one ``earshot analyze`` or ``earshot scout`` invocation
+    (called either directly or via ``earshot run``). Aggregate columns
+    track Anthropic API spend so you can see month-to-date cost trends.
+    """
+    cfg: config_mod.Config = ctx.obj["config"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}.", err=True)
+        sys.exit(1)
+    conn = db_mod.connect(cfg.db_path)
+    sql = "SELECT * FROM runs"
+    params: list = []
+    if status_filter:
+        sql += " WHERE status = ?"
+        params.append(status_filter)
+    sql += " ORDER BY started_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        click.echo("No runs recorded yet." if not status_filter else
+                   f"No runs with status={status_filter}.")
+        return
+
+    click.echo(f"  {'id':>4}  {'started':19s}  {'dur':>5s}  {'status':8s}  "
+               f"{'vids':>4s}  {'news':>4s}  {'in tok':>7s}  {'out':>5s}  {'cost':>9s}")
+    total_cost = 0.0
+    for r in rows:
+        dur = _duration(r["started_at"], r["finished_at"])
+        cost = r["cost_usd"] or 0.0
+        total_cost += cost
+        click.echo(
+            f"  {r['id']:>4d}  {r['started_at'][:19]:19s}  {dur:>5s}  "
+            f"{r['status']:8s}  {r['videos_processed']:>4d}  "
+            f"{r['news_processed']:>4d}  {r['tokens_in']:>7,d}  "
+            f"{r['tokens_out']:>5,d}  ${cost:>8.4f}"
+        )
+    click.echo("")
+    click.echo(f"  Sum across shown runs: ${total_cost:.4f}")
+    conn.close()
+
+
+def _duration(start_iso: str | None, end_iso: str | None) -> str:
+    if not start_iso or not end_iso:
+        return "—"
+    from datetime import datetime
+    try:
+        s = datetime.strptime(start_iso, "%Y-%m-%dT%H:%M:%SZ")
+        e = datetime.strptime(end_iso, "%Y-%m-%dT%H:%M:%SZ")
+        secs = int((e - s).total_seconds())
+        if secs < 60:
+            return f"{secs}s"
+        return f"{secs // 60}m{secs % 60:02d}s"
+    except ValueError:
+        return "—"
+
+
 @main.command("interactions")
 @click.option("-n", "limit", default=10, type=int, help="Max rows to show.")
 @click.option("--status", "status_filter", default=None,
