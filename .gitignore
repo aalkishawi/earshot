@@ -41,6 +41,7 @@ logs/
 *.log
 audio_cache/
 transcripts_cache/
+study_queue.md
 
 # Claude
 .claude/
