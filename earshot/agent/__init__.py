@@ -17,6 +17,7 @@ from earshot.agent.store import (
     create_interaction, get_interaction_by_call_sid, get_interaction_by_id,
     attach_call_sid, append_turn, update_last_turn_answer,
     set_journal_note, finalize_interaction,
+    list_recent_interactions, sweep_orphaned_interactions,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "create_interaction", "get_interaction_by_call_sid", "get_interaction_by_id",
     "attach_call_sid", "append_turn", "update_last_turn_answer",
     "set_journal_note", "finalize_interaction",
+    "list_recent_interactions", "sweep_orphaned_interactions",
 ]

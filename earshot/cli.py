@@ -165,6 +165,17 @@ def webhook_cmd(ctx: click.Context, host: str | None, port: int | None, reload: 
         sys.exit(1)
     host = host or cfg.webhook_host
     port = port or cfg.webhook_port
+
+    # Sweep orphaned 'started' interactions from prior crashed runs so the
+    # audit log doesn't drift. Cheap one-shot at boot.
+    if cfg.db_path.exists():
+        from earshot import agent as agent_mod
+        conn = db_mod.connect(cfg.db_path)
+        n_swept = agent_mod.sweep_orphaned_interactions(conn)
+        conn.close()
+        if n_swept:
+            click.echo(f"  swept {n_swept} orphaned interaction row(s) → status='abandoned'")
+
     click.echo(f"Earshot webhook on http://{host}:{port}  (public: {cfg.webhook_url})")
     click.echo(f"  signature validation: {'ON' if cfg.webhook_validate_signature else 'OFF'}")
     click.echo(f"  caps: {cfg.webhook_max_turns} turns / {cfg.webhook_max_call_seconds}s per call")
@@ -1008,6 +1019,88 @@ def test_call_cmd(ctx: click.Context) -> None:
     else:
         click.echo(f"FAILED: {result.error}", err=True)
         sys.exit(2)
+
+
+@main.command("interactions")
+@click.option("-n", "limit", default=10, type=int, help="Max rows to show.")
+@click.option("--status", "status_filter", default=None,
+              help="Filter by status: started | completed | failed | abandoned.")
+@click.pass_context
+def interactions_cmd(ctx: click.Context, limit: int, status_filter: str | None) -> None:
+    """List recent v2 interactive calls — duration, cost, journal-note presence."""
+    from earshot import agent as agent_mod
+
+    cfg: config_mod.Config = ctx.obj["config"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}.", err=True)
+        sys.exit(1)
+    conn = db_mod.connect(cfg.db_path)
+    rows = agent_mod.list_recent_interactions(conn, limit=limit, status_filter=status_filter)
+    if not rows:
+        click.echo("No interactions yet." if not status_filter else
+                   f"No interactions with status={status_filter}.")
+        return
+    click.echo(f"  {'id':>4}  {'started':19s}  {'status':10s}  {'dur':>5s}  "
+               f"{'turns':>5s}  {'cost':>7s}  journal?")
+    for ix in rows:
+        dur = f"{ix.duration_seconds}s" if ix.duration_seconds is not None else "—"
+        journal = "yes" if ix.journal_note else "—"
+        click.echo(
+            f"  {ix.id:>4d}  {ix.started_at[:19]:19s}  {ix.status:10s}  "
+            f"{dur:>5s}  {len(ix.turns):>5d}  ${ix.cost_usd:>6.4f}  {journal}"
+        )
+    conn.close()
+
+
+@main.command("replay")
+@click.argument("interaction_id", type=int)
+@click.pass_context
+def replay_cmd(ctx: click.Context, interaction_id: int) -> None:
+    """Pretty-print the full transcript of a v2 interactive call."""
+    from earshot import agent as agent_mod
+
+    cfg: config_mod.Config = ctx.obj["config"]
+    if not cfg.db_path.exists():
+        click.echo(f"DB not found at {cfg.db_path}.", err=True)
+        sys.exit(1)
+    conn = db_mod.connect(cfg.db_path)
+    ix = agent_mod.get_interaction_by_id(conn, interaction_id)
+    if ix is None:
+        click.echo(f"No interaction with id {interaction_id}.", err=True)
+        sys.exit(1)
+
+    click.echo(f"Interaction #{ix.id}  call_sid={ix.call_sid or '—'}")
+    click.echo(f"  status={ix.status}  started={ix.started_at}  ended={ix.ended_at or '—'}"
+               f"  duration={ix.duration_seconds}s" if ix.duration_seconds else
+               f"  status={ix.status}  started={ix.started_at}  ended={ix.ended_at or '—'}")
+    click.echo(f"  tokens: {ix.tokens_in:,} in / {ix.tokens_out:,} out   cost: ${ix.cost_usd:.4f}")
+    if ix.error:
+        click.echo(f"  error: {ix.error}")
+    click.echo(f"  items: {len(ix.item_refs)}")
+    for r in ix.item_refs:
+        click.echo(f"    - {r.kind}/{r.ref_id}")
+    click.echo("")
+
+    if not ix.turns:
+        click.echo("  (no turns recorded — call ended before reaching the webhook)")
+    else:
+        click.echo("Turns:")
+        for t in ix.turns:
+            item_label = ""
+            if t.item_ref:
+                item_label = f"  [{t.item_ref.kind}/{t.item_ref.ref_id}]"
+            click.echo(f"  #{t.turn} {t.phase}{item_label}")
+            if t.question:
+                click.echo(f"     agent : {t.question}")
+            if t.answer_text is not None:
+                click.echo(f"     user  : {t.answer_text or '(silence)'}")
+            if t.action:
+                click.echo(f"     action: {t.action}")
+
+    if ix.journal_note:
+        click.echo("")
+        click.echo(f"Journal: {ix.journal_note}")
+    conn.close()
 
 
 @main.command("study-queue")

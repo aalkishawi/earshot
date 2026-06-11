@@ -145,3 +145,43 @@ def finalize_interaction(
             WHERE id = ?""",
         (status, utcnow_iso(), duration_seconds, error, interaction_id),
     )
+
+
+def list_recent_interactions(
+    conn: sqlite3.Connection,
+    limit: int = 20,
+    status_filter: str | None = None,
+) -> list[Interaction]:
+    """Most-recent-first listing for `earshot interactions`."""
+    sql = "SELECT * FROM interactions"
+    params: list = []
+    if status_filter:
+        sql += " WHERE status = ?"
+        params.append(status_filter)
+    sql += " ORDER BY started_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    return [_row_to_interaction(r) for r in rows]
+
+
+def sweep_orphaned_interactions(
+    conn: sqlite3.Connection,
+    older_than_seconds: int = 3600,
+) -> int:
+    """Mark long-stuck started rows as 'abandoned'. Returns sweep count.
+
+    A row is 'orphaned' when it was created but the Twilio status callback
+    never fired (call dropped, network glitch, server crash mid-call). The
+    sweeper protects the audit log from filling with phantom 'started' rows.
+    """
+    cur = conn.execute(
+        """UPDATE interactions
+              SET status = 'abandoned',
+                  ended_at = ?,
+                  error = COALESCE(error, 'no status callback received')
+            WHERE status = 'started'
+              AND ended_at IS NULL
+              AND julianday(?) - julianday(started_at) > ? / 86400.0""",
+        (utcnow_iso(), utcnow_iso(), older_than_seconds),
+    )
+    return cur.rowcount or 0
