@@ -59,6 +59,16 @@ earshot analyze --video-id <id>
 earshot digest                          # builds + sends the digest email
 ```
 
+### Upgrading
+
+```powershell
+pip install --upgrade --force-reinstall git+https://github.com/aalkishawi/earshot.git
+earshot doctor                          # confirm new version is healthy
+```
+
+Your `.env`, `channels.yaml`, and SQLite database are preserved across
+upgrades. The schema auto-migrates on first run.
+
 ### What it costs you
 
 You bring your own API keys. The defaults are calibrated for cheapest viable:
@@ -115,11 +125,11 @@ earshot scout                                # AI news fetch + relevance scoring
 earshot digest [--instant]                   # build + send daily / instant digest
 earshot run                                  # all of the above in sequence
 
-# voice replay (no DB / email side-effects)
-earshot call --video-id ID                   # voice-call a specific episode
-earshot call --news-id N                     # voice-call a specific news item
-earshot call --daily                         # voice-call today's digest content
-earshot call --video-id ID --interactive     # v2 interactive call (requires webhook)
+# voice replay
+earshot call --video-id ID                   # v1.5 TTS call for one episode (no DB writes)
+earshot call --news-id N                     # v1.5 TTS call for one news item (no DB writes)
+earshot call --daily                         # v1.5 TTS call of today's digest (no DB writes)
+earshot call --video-id ID --interactive     # v2 conversation (records to `interactions` table)
 earshot call --news-id N --interactive       # same, for a news item
 
 # v2 webhook server (only needed for interactive calls)
@@ -242,12 +252,12 @@ to handle the routine daily noon-EST briefing.
   call; **press any digit on your phone keypad** to skip it and reach the
   agent. Upgrading the Twilio account (any paid credit) removes the
   preamble.
-- **First scout run** baselines several thousand existing items as
-  `skipped` so it doesn't LLM-score historical posts. From the second run
-  onward you only see genuinely new items.
 - **Cost cap**: `MAX_LLM_COST_PER_RUN_USD` (default $2) aborts a single run
   if Claude spending crosses it. Adjust upward if you're catching up on a
   large backlog.
+- **Signature validation through ngrok** may 403 because ngrok's URL
+  canonicalization can drift from Twilio's signature. The v2 setup section
+  above covers when it's safe to disable.
 
 ## Architecture
 
