@@ -1,5 +1,7 @@
 # Earshot
 
+[![tests](https://github.com/aalkishawi/earshot/actions/workflows/test.yml/badge.svg)](https://github.com/aalkishawi/earshot/actions/workflows/test.yml)
+
 A personal AI agent that listens to the podcasts you don't have time for,
 extracts what's worth studying, scouts AI news, and delivers a daily briefing
 to your inbox — and, if you want it, your phone.
@@ -254,11 +256,13 @@ Once configured, v2 **automatically fires for instant alerts** (priority
 videos or news scoring above `INSTANT_MIN_NEWS_SCORE`). v1.5 TTS continues
 to handle the routine daily noon-EST briefing.
 
-> **Security note:** running the webhook through ngrok with
-> `EARSHOT_WEBHOOK_VALIDATE_SIGNATURE=1` may 403 because ngrok's URL
-> canonicalization can drift from Twilio's signature. Set `=0` only for
-> local development on a temporary tunnel. Production deployments behind
-> a stable hosted endpoint should keep it on.
+> **Security note:** signature validation is on by default
+> (`EARSHOT_WEBHOOK_VALIDATE_SIGNATURE=1`). The implementation reads the
+> raw ASGI query string and tries multiple canonical URL forms, which
+> handles the encoding drift that proxies (including ngrok) sometimes
+> introduce. If a real call gets 403'd, the rejection log line shows
+> exactly which URL variants were tried so you can patch — disable
+> validation only as a temporary workaround while diagnosing.
 
 ## Notes for trial testers
 
