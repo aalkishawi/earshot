@@ -10,28 +10,54 @@ yourself (Anthropic, Yahoo, optionally Twilio and Groq).
 
 ## Trial users start here
 
+### Step 1 — gather two credentials (5 min)
+
+Before installing, grab these — `earshot init` will ask for them and won't
+let you skip:
+
+- **Anthropic API key** — sign up at [console.anthropic.com](https://console.anthropic.com/),
+  fund $5 in credits (covers ~2 months at default volume; $5 is Anthropic's
+  minimum, not Earshot's).
+- **Yahoo email + app password** — log in at
+  [login.yahoo.com](https://login.yahoo.com/) → Account Security → "Generate
+  and manage app passwords". Use the generated 16-char string, **not your
+  login password** (that won't work for SMTP).
+
+Optional: a Twilio account with a phone number if you want voice calls.
+
+### Step 2 — install and configure
+
 ```powershell
-# 1. install (Python 3.11+ required)
+# Python 3.11+ required
 pip install git+https://github.com/aalkishawi/earshot.git
 
-# 2. interactive setup — asks for API keys, tests them as it goes,
-#    walks you through adding at least one channel
+# interactive setup — paste the credentials above when prompted
 earshot init
 
-# 3. try it
-earshot run
-
-# 4. (optional) schedule a daily run at 18:30 local time
-earshot schedule
-
-# any time after — diagnose configuration
+# verify everything is green
 earshot doctor
+
+# register a daily 18:30 local-time run (no-op if you'd rather kick it off manually)
+earshot schedule
 ```
 
-That's it. After `earshot init` you'll have a `.env` (gitignored, safe to
-keep secrets in), a SQLite database, and at least one YouTube channel queued
-up. After `earshot run` the first time, ~30 seconds later you should have a
-digest email in your inbox.
+### Step 3 — what to expect on the first run
+
+The first time the pipeline runs (manually or scheduled), it **baselines**
+existing entries from every channel and news source so it doesn't process
+months of backlog all at once. **No digest comes out of the first run** —
+that's normal. From the second run onward you'll get a digest for
+genuinely new uploads + news.
+
+If you want to validate the full pipeline immediately rather than wait,
+pick one baselined video and force it through:
+
+```powershell
+earshot videos --state skipped -n 5    # pick a video_id
+earshot transcribe --video-id <id>
+earshot analyze --video-id <id>
+earshot digest                          # builds + sends the digest email
+```
 
 ### What it costs you
 
