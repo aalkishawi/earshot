@@ -248,62 +248,106 @@ def init_db(ctx: click.Context) -> None:
 @main.command("status")
 @click.pass_context
 def status(ctx: click.Context) -> None:
-    """Show DB + config health summary."""
+    """Show DB + config health summary.
+
+    Reads-only — no API calls, no outbound network. Use `earshot doctor`
+    for the live credentials probe.
+    """
     cfg: config_mod.Config = ctx.obj["config"]
     dry_run: bool = ctx.obj["dry_run"]
 
-    click.echo(f"earshot v{__version__}  (dry_run={dry_run})")
-    click.echo("")
-    click.echo("Paths:")
-    click.echo(f"  db_path           = {cfg.db_path} {'(exists)' if cfg.db_path.exists() else '(not created — run `earshot init-db`)'}")
-    click.echo(f"  data_dir          = {cfg.data_dir}")
-    click.echo(f"  channels.yaml     = {cfg.channels_path} {'(exists)' if cfg.channels_path.exists() else '(MISSING)'}")
-    click.echo(f"  news_sources.yaml = {cfg.news_sources_path} {'(exists)' if cfg.news_sources_path.exists() else '(MISSING)'}")
-    click.echo("")
-    click.echo("Channels configured:")
-    if cfg.channels:
-        for c in cfg.channels:
-            kw = f"  keywords={c.keywords}" if c.keywords else ""
-            click.echo(f"  - {c.handle:25s} prio={c.priority}  id={c.channel_id}  ({c.name}){kw}")
-    else:
-        click.echo("  (none)")
-    click.echo("")
-    click.echo("News sources configured:")
-    if cfg.news_sources:
-        for s in cfg.news_sources:
-            click.echo(f"  - {s.get('name','?')} [{s.get('type','?')}]")
-    else:
-        click.echo("  (none)")
-    click.echo("")
-    click.echo("Secrets / env:")
-    missing = cfg.missing_keys_for_email()
-    click.echo(f"  ANTHROPIC_API_KEY  : {'set' if cfg.anthropic_api_key else 'MISSING'}")
-    click.echo(f"  GROQ_API_KEY       : {'set' if cfg.groq_api_key else 'unset (needed module 3+)'}")
-    click.echo(f"  YAHOO_EMAIL        : {'set' if cfg.yahoo_email else 'MISSING'}")
-    click.echo(f"  YAHOO_APP_PASSWORD : {'set' if cfg.yahoo_app_password else 'MISSING'}")
-    click.echo(f"  DIGEST_RECIPIENT   : {cfg.digest_recipient or 'MISSING'}")
-    click.echo("")
-    if missing:
-        click.echo(f"NOT YET READY for live email. Missing: {', '.join(missing)}")
-    else:
-        click.echo("Ready for live email delivery.")
+    OK = click.style("✓", fg="green")
+    SK = click.style("-", fg="white")
+    BAD = click.style("✗", fg="red")
 
-    if cfg.db_path.exists():
-        conn = db_mod.connect(cfg.db_path)
-        version = db_mod.get_schema_version(conn)
-        ch_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
-        v_count = conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
-        n_count = conn.execute("SELECT COUNT(*) FROM news_items").fetchone()[0]
-        g_count = conn.execute("SELECT COUNT(*) FROM glossary").fetchone()[0]
-        r_count = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
-        conn.close()
+    click.echo(f"earshot v{__version__}" + (f"  (dry_run)" if dry_run else ""))
+
+    # --- Issues summary (only printed if there ARE issues) -----------------
+    issues: list[str] = []
+    if not cfg.db_path.exists():
+        issues.append("database not initialized — run `earshot init-db`")
+    if not cfg.channels_path.exists() or not cfg.channels:
+        issues.append("no YouTube channels configured — run `earshot init`")
+    missing_email = cfg.missing_keys_for_email()
+    if missing_email:
+        issues.append(f"email delivery not ready (missing: {', '.join(missing_email)})")
+    if issues:
         click.echo("")
-        click.echo(f"Database (schema v{version}):")
-        click.echo(f"  channels   : {ch_count}")
-        click.echo(f"  videos     : {v_count}")
-        click.echo(f"  news_items : {n_count}")
-        click.echo(f"  glossary   : {g_count}")
-        click.echo(f"  runs       : {r_count}")
+        click.echo(click.style("Issues:", bold=True, fg="yellow"))
+        for it in issues:
+            click.echo(f"  {BAD} {it}")
+
+    # --- Credentials -------------------------------------------------------
+    click.echo("")
+    click.echo(click.style("Credentials:", bold=True))
+    click.echo(f"  {OK if cfg.anthropic_api_key else BAD} Anthropic (Claude)")
+    click.echo(f"  {OK if cfg.is_complete_for_email() else BAD} Yahoo SMTP "
+               + (f"→ {cfg.digest_recipient}" if cfg.is_complete_for_email() else ""))
+    click.echo(f"  {OK if cfg.groq_api_key else SK} Groq Whisper "
+               + ("" if cfg.groq_api_key else "(optional ASR fallback)"))
+    click.echo(f"  {OK if cfg.is_complete_for_voice() else SK} Twilio voice "
+               + (f"→ {cfg.twilio_to_number}" if cfg.is_complete_for_voice() else "(optional)"))
+    v2_ready = cfg.is_complete_for_voice() and bool(cfg.webhook_url)
+    click.echo(f"  {OK if v2_ready else SK} v2 interactive call "
+               + ("(webhook URL set)" if v2_ready else "(EARSHOT_WEBHOOK_URL not set)"))
+
+    # --- Channels & sources -----------------------------------------------
+    click.echo("")
+    click.echo(click.style(f"Channels ({len(cfg.channels)}):", bold=True))
+    for c in cfg.channels:
+        prio_marker = "!" if c.priority >= 2 else " "
+        click.echo(f"  {prio_marker} {c.handle:25s} {c.name}")
+    if not cfg.channels:
+        click.echo(f"  {BAD} (none — `earshot init` or edit channels.yaml)")
+
+    click.echo("")
+    click.echo(click.style(f"News sources ({len(cfg.news_sources)}):", bold=True))
+    for s in cfg.news_sources:
+        click.echo(f"    {s.get('name','?'):25s} [{s.get('type','?')}]")
+
+    # --- Database stats ----------------------------------------------------
+    if not cfg.db_path.exists():
+        return
+    conn = db_mod.connect(cfg.db_path)
+    schema_v = db_mod.get_schema_version(conn)
+
+    def _count_by_state(table: str, state_col: str = "state") -> dict[str, int]:
+        rows = conn.execute(
+            f"SELECT {state_col} AS s, COUNT(*) AS n FROM {table} GROUP BY {state_col}",
+        ).fetchall()
+        return {r["s"]: r["n"] for r in rows}
+
+    v_counts = _count_by_state("videos")
+    n_counts = _count_by_state("news_items")
+    g_total = conn.execute("SELECT COUNT(*) FROM glossary").fetchone()[0]
+    r_total, r_cost = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(cost_usd), 0.0) FROM runs"
+    ).fetchone()
+    ix_counts = _count_by_state("interactions", "status")
+    last_alert = conn.execute(
+        "SELECT sent_at, channel FROM alerts WHERE status = 'sent' ORDER BY sent_at DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+
+    click.echo("")
+    click.echo(click.style(f"Database (schema v{schema_v}):", bold=True))
+    click.echo(f"  videos     : {sum(v_counts.values()):>5d}  ({_fmt_states(v_counts)})")
+    click.echo(f"  news       : {sum(n_counts.values()):>5d}  ({_fmt_states(n_counts)})")
+    click.echo(f"  glossary   : {g_total:>5d}  unique terms")
+    click.echo(f"  runs       : {r_total:>5d}  total cost ${r_cost:.4f}")
+    if ix_counts:
+        click.echo(f"  v2 calls   : {sum(ix_counts.values()):>5d}  ({_fmt_states(ix_counts)})")
+    if last_alert:
+        click.echo("")
+        click.echo(f"  Last delivery: {last_alert['sent_at']}  via {last_alert['channel']}")
+
+
+def _fmt_states(counts: dict[str, int]) -> str:
+    """e.g. `42 baselined, 3 summarized` for a state-counts dict."""
+    if not counts:
+        return "—"
+    parts = [f"{n} {state}" for state, n in sorted(counts.items(), key=lambda x: -x[1])]
+    return ", ".join(parts)
 
 
 @main.command("channels")
