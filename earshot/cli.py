@@ -567,15 +567,28 @@ def analyze_cmd(ctx: click.Context, limit: int | None, video_id: str | None) -> 
 
 
 @main.command("show")
-@click.argument("video_id")
+@click.argument("item_id")
 @click.pass_context
-def show_cmd(ctx: click.Context, video_id: str) -> None:
-    """Pretty-print the stored analysis for a video."""
+def show_cmd(ctx: click.Context, item_id: str) -> None:
+    """Pretty-print the stored analysis for a video OR news item.
+
+    Numeric ITEM_ID is treated as a news_items.id; anything else is treated
+    as a YouTube video_id (e.g. ``4sN_zR8Vf94``).
+    """
     cfg: config_mod.Config = ctx.obj["config"]
     if not cfg.db_path.exists():
         click.echo(f"DB not found at {cfg.db_path}.", err=True)
         sys.exit(1)
     conn = db_mod.connect(cfg.db_path)
+
+    # Numeric → news item
+    if item_id.isdigit():
+        _show_news(conn, int(item_id))
+        conn.close()
+        return
+
+    # Otherwise → video
+    video_id = item_id
     row = conn.execute(
         """
         SELECT v.video_id, v.title, v.url, v.state, v.is_priority, v.summary_json,
@@ -640,6 +653,32 @@ def show_cmd(ctx: click.Context, video_id: str) -> None:
             if c.get("why_it_matters"):
                 click.echo(f"          why: {c['why_it_matters']}")
     conn.close()
+
+
+def _show_news(conn, news_id: int) -> None:
+    """Pretty-print one news item. Helper for `show` when the arg is numeric."""
+    row = conn.execute(
+        """SELECT id, source, title, url, summary, importance_score, state,
+                  published_at, seen_at, notified_at
+             FROM news_items WHERE id = ?""",
+        (news_id,),
+    ).fetchone()
+    if not row:
+        click.echo(f"No news item with id {news_id}", err=True)
+        sys.exit(1)
+
+    score = row["importance_score"]
+    score_str = f"[{score}]" if score is not None else "[—]"
+    click.echo(f"{score_str} {row['source']} / news #{row['id']}")
+    click.echo(f"{row['title']}")
+    click.echo(f"{row['url']}")
+    click.echo(f"state={row['state']}  published={row['published_at'] or '—'}  seen={row['seen_at']}")
+    if row["notified_at"]:
+        click.echo(f"notified_at={row['notified_at']}")
+    click.echo("")
+    if row["summary"]:
+        click.echo("Summary:")
+        click.echo(f"  {row['summary']}")
 
 
 @main.command("scout")
