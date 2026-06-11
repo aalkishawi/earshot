@@ -258,6 +258,18 @@ Once configured, v2 **automatically fires for instant alerts** (priority
 videos or news scoring above `INSTANT_MIN_NEWS_SCORE`). v1.5 TTS continues
 to handle the routine daily noon-EST briefing.
 
+> **Important — v2 needs the webhook reachable at firing time.** If you
+> set `EARSHOT_WEBHOOK_URL` in `.env` and instant alerts fire while
+> `earshot webhook` isn't running (or the ngrok tunnel is down), Twilio
+> will dial you but hit "application error" the moment you press a digit
+> past the trial preamble. The pre-flight check (added in v0.3.1) aborts
+> doomed calls *before* dialing — you'll see `failed: webhook not
+> reachable` in `earshot interactions` instead of a botched call — but
+> the instant alert still loses its v2 path. For unattended schedules,
+> either keep the webhook server running persistently (e.g. as a
+> Windows service or systemd unit) or comment out `EARSHOT_WEBHOOK_URL`
+> in `.env` to fall back to v1.5 TTS for instant alerts.
+
 > **Security note:** signature validation is on by default
 > (`EARSHOT_WEBHOOK_VALIDATE_SIGNATURE=1`). The implementation reads the
 > raw ASGI query string and tries multiple canonical URL forms, which

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "earshot"
-version = "0.3.0"
+version = "0.3.1"
 description = "Podcast and AI-news intelligence agent — monitors YouTube podcasts, summarizes episodes, extracts new concepts, scouts AI news, delivers via email and outbound voice call."
 readme = "README.md"
 requires-python = ">=3.11"

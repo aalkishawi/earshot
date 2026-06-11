@@ -7,6 +7,17 @@ phase, so minor bumps may introduce breaking changes when needed).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-06-11
+
+### Fixed
+- **v2 pre-flight reachability check.** `TwilioInteractiveNotifier` now
+  hits `{webhook_url}/healthz` with a 3-second timeout before placing
+  the Twilio call. If the webhook is down (server stopped, ngrok tunnel
+  closed), the alert is logged as `failed: webhook not reachable…` and
+  the email still goes out — but no Twilio minutes are burned on a call
+  that would land on "application error" the moment the user presses
+  through the trial preamble.
+
 ### Added
 - `earshot show NEWS_ID` — inspect a single news item by id, mirroring
   the existing video flow.
@@ -23,6 +34,10 @@ phase, so minor bumps may introduce breaking changes when needed).
   doctor` and refuses to claim "Setup complete" when anything's red.
 - README's signature-validation security note rewritten now that the
   URL-reconstruction hardening + tests cover ngrok drift.
+- README v2 section explicitly documents that `EARSHOT_WEBHOOK_URL`
+  must point to a reachable endpoint at firing time; suggests
+  commenting it out for unattended schedules without a persistent
+  webhook host.
 
 ## [0.3.0] — 2026-06-11
 

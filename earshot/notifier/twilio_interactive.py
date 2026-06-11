@@ -37,6 +37,23 @@ def _payload_to_refs(payload: DigestPayload) -> list[ItemRef]:
     return refs
 
 
+def _webhook_reachable(webhook_url: str, timeout: float = 3.0) -> tuple[bool, str]:
+    """GET {webhook_url}/healthz with a short timeout.
+
+    Returns (True, "") on a 200 response, (False, reason) otherwise.
+    The webhook's /healthz endpoint is intentionally trivial — no auth,
+    no Twilio signature, just ``{"status": "ok"}``.
+    """
+    try:
+        import requests
+        r = requests.get(webhook_url.rstrip("/") + "/healthz", timeout=timeout)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:100]}"
+    if r.status_code != 200:
+        return False, f"HTTP {r.status_code}"
+    return True, ""
+
+
 class TwilioInteractiveNotifier:
     """Notifier that initiates an interactive call. Use for instant alerts or on-demand."""
 
@@ -73,6 +90,17 @@ class TwilioInteractiveNotifier:
             return AlertResult(
                 status="failed", channel=self.channel, recipient=self._to,
                 error="no item refs in payload to discuss",
+            )
+
+        # Pre-flight: make sure the webhook is actually reachable before we
+        # burn Twilio minutes on a call that will land on "application
+        # error" the moment the user presses through the trial preamble.
+        # Aborting here costs nothing; placing a doomed call costs ~$0.05.
+        reachable, why = _webhook_reachable(self._webhook_url)
+        if not reachable:
+            return AlertResult(
+                status="failed", channel=self.channel, recipient=self._to,
+                error=f"webhook not reachable at {self._webhook_url}: {why}",
             )
 
         interaction_id = create_interaction(self._conn, refs)
