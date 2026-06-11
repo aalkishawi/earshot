@@ -41,6 +41,12 @@ dependencies = [
     "yt-dlp>=2024.10.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",       # FastAPI TestClient dependency
+]
+
 [project.urls]
 Homepage = "https://github.com/aalkishawi/earshot"
 Issues = "https://github.com/aalkishawi/earshot/issues"
