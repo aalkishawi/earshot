@@ -102,7 +102,28 @@ def _check_anthropic(api_key: str) -> tuple[bool, str]:
             return True, "API key works."
         return False, "got an empty response — try a different key."
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        return False, _classify_anthropic_error(e)
+
+
+def _classify_anthropic_error(exc: Exception) -> str:
+    """Turn raw anthropic SDK exceptions into something a trial user can act on."""
+    msg = str(exc).lower()
+    cls = type(exc).__name__
+    if "credit balance is too low" in msg or "insufficient_quota" in msg:
+        return (
+            "Anthropic credit balance too low. Add credits at "
+            "https://console.anthropic.com → Plans & Billing."
+        )
+    if "authentication" in msg or "invalid api key" in msg or "401" in msg:
+        return (
+            "API key rejected (not authenticated). Double-check the key — it "
+            "should start with 'sk-ant-' and have no leading/trailing whitespace."
+        )
+    if "rate limit" in msg or "429" in msg:
+        return "Rate-limited by Anthropic. Wait a few seconds and try again."
+    if isinstance(exc, (ConnectionError,)) or "name or service not known" in msg or "getaddrinfo" in msg:
+        return "No network connection to Anthropic. Check your internet."
+    return f"{cls}: {str(exc)[:160]}"
 
 
 def _check_yahoo(email: str, password: str) -> tuple[bool, str]:
@@ -112,7 +133,32 @@ def _check_yahoo(email: str, password: str) -> tuple[bool, str]:
             s.login(email, (password or "").replace(" ", ""))
         return True, "SMTP login succeeded."
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        return False, _classify_yahoo_error(e, password)
+
+
+def _classify_yahoo_error(exc: Exception, password: str) -> str:
+    msg = str(exc).lower()
+    cls = type(exc).__name__
+    # Yahoo's SMTP auth failure for login passwords is generic 535. Heuristic:
+    # if password length isn't ~16 chars (with spaces stripped), the user most
+    # likely pasted a login password.
+    stripped = (password or "").replace(" ", "")
+    if "authenticationerror" in cls.lower() or "535" in msg:
+        if 12 <= len(stripped) <= 18:
+            return (
+                "Yahoo rejected the app password. Double-check there are no "
+                "extra characters, and that it's the latest one (generating a "
+                "new one revokes previous ones)."
+            )
+        return (
+            f"Yahoo rejected the password. This looks like a {len(stripped)}-char "
+            "string — Yahoo app passwords are 16 chars. You may be using your "
+            "login password instead of an app password. Generate one at "
+            "login.yahoo.com → Account Security → 'Generate app password'."
+        )
+    if isinstance(exc, (ConnectionError,)) or "timed out" in msg or "getaddrinfo" in msg:
+        return "Couldn't reach Yahoo SMTP. Check your internet."
+    return f"{cls}: {str(exc)[:160]}"
 
 
 def _check_groq(api_key: str) -> tuple[bool, str]:
@@ -394,9 +440,35 @@ def run_wizard() -> None:
             fg="yellow",
         ))
 
-    # Done
+    # Final health check — same probes as `earshot doctor` so the user
+    # sees red/green before exiting the wizard.
     _hr()
-    click.echo(click.style("  Setup complete.", bold=True, fg="green"))
+    click.echo(click.style("  Health check", bold=True))
+    cfg = config_mod.load(dotenv_path=env_path)
+    from earshot import doctor as doctor_mod
+    n_fail = n_warn = 0
+    for r in doctor_mod.run_all(cfg):
+        if r.status == "ok":
+            mark = click.style("[OK]  ", fg="green")
+        elif r.status == "warn":
+            mark = click.style("[WARN]", fg="yellow"); n_warn += 1
+        elif r.status == "fail":
+            mark = click.style("[FAIL]", fg="red"); n_fail += 1
+        else:
+            mark = click.style("[--]  ", fg="white")
+        click.echo(f"  {mark}  {r.name:14s}  {r.message}")
+        if r.hint and r.status in ("warn", "fail"):
+            click.echo(f"          hint: {r.hint}")
+
+    _hr()
+    if n_fail:
+        click.echo(click.style(
+            f"  Setup wrote .env, but {n_fail} check(s) failed.", bold=True, fg="yellow",
+        ))
+        click.echo("  Fix the failing items above (hints in each line), then re-run:")
+        click.echo("    earshot doctor")
+    else:
+        click.echo(click.style("  Setup complete.", bold=True, fg="green"))
     click.echo("")
     click.echo("  Next steps:")
     click.echo("    1. Try it now:        earshot run")
