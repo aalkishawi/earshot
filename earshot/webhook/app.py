@@ -392,16 +392,51 @@ async def _form(request: Request) -> dict[str, str]:
 def _verify_signature(
     request: Request, body: dict[str, str], cfg: Config, validator,
 ) -> None:
+    """Validate Twilio's X-Twilio-Signature header.
+
+    Twilio signs the **exact** URL it called including the query string,
+    in the form it sent. Through ngrok our local server sees HTTP and a
+    possibly re-encoded query string, so we reconstruct the URL from
+    cfg.webhook_url (the canonical https base) + the raw ASGI query
+    string (avoiding starlette's URL re-encoding which can corrupt
+    commas / unreserved chars).
+
+    For belt-and-suspenders, if the primary URL doesn't validate we also
+    try a fallback without the query string (for endpoints that get hit
+    via Twilio's <Redirect> fallthrough, which sometimes strips params).
+    """
     if validator is None:
         return
     signature = request.headers.get("X-Twilio-Signature", "")
-    # Twilio signs the exact URL it called — reconstruct from cfg.webhook_url
-    # + path + query so signing matches even when ngrok terminates TLS.
-    url = (cfg.webhook_url or "").rstrip("/") + request.url.path
-    if request.url.query:
-        url += "?" + request.url.query
-    if not validator.validate(url, body, signature):
-        raise HTTPException(status_code=403, detail="bad twilio signature")
+    if not signature:
+        raise HTTPException(status_code=403, detail="missing twilio signature")
+
+    base = (cfg.webhook_url or "").rstrip("/")
+    path = request.url.path
+    # Raw query bytes — never decoded by FastAPI/starlette.
+    raw_query = request.scope.get("query_string", b"").decode("ascii")
+
+    candidates: list[str] = []
+    candidates.append(base + path + ("?" + raw_query if raw_query else ""))
+    # Fallback: same URL with starlette's re-encoded query (catches the
+    # rare case where the raw ASGI bytes are out of sync with what Twilio
+    # actually sent — e.g. proxies that normalize the query string).
+    if request.url.query and request.url.query != raw_query:
+        candidates.append(base + path + "?" + request.url.query)
+    # Fallback: URL without query string (rare, but covers misbehaving
+    # intermediaries that strip the query before signing).
+    if raw_query:
+        candidates.append(base + path)
+
+    for url in candidates:
+        if validator.validate(url, body, signature):
+            return
+
+    log.warning(
+        "twilio signature validation failed. tried URLs=%s body_keys=%s",
+        candidates, sorted(body.keys()),
+    )
+    raise HTTPException(status_code=403, detail="bad twilio signature")
 
 
 def _elapsed_seconds(started_at_iso: str) -> int:

@@ -27,6 +27,24 @@ Optional: a Twilio account with a phone number if you want voice calls.
 
 ### Step 2 — install and configure
 
+**One-shot installer (recommended)** — creates a `.venv` in the current
+directory so Earshot doesn't pollute your global Python:
+
+```powershell
+# Windows PowerShell
+iwr -useb https://raw.githubusercontent.com/aalkishawi/earshot/main/install.ps1 | iex
+```
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/aalkishawi/earshot/main/install.sh | bash
+```
+
+The installer creates `.venv`, installs Earshot v0.3.0 from GitHub, and
+tells you the four commands to run next.
+
+**Or install manually:**
+
 ```powershell
 # Python 3.11+ required
 pip install git+https://github.com/aalkishawi/earshot.git

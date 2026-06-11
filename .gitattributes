@@ -1,0 +1,6 @@
+# Force LF for shell scripts so curl|bash works on macOS/Linux after a
+# Windows checkout (Git's autocrlf would otherwise convert them).
+*.sh text eol=lf
+
+# PowerShell scripts can be either, but normalize to LF for consistency.
+*.ps1 text eol=lf
